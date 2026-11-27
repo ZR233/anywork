@@ -496,6 +496,9 @@ abstract class TimelineToolItemAdapter {
   /// Whether attachments are backed by `tool.output-artifacts` media records.
   bool get usesFileArtifactsMedia => false;
 
+  /// Whether completed items show `elapsed` metadata (reserved for `exec`).
+  bool get showsElapsedDuration => false;
+
   /// Whether declared-window expansion prepends decoded arguments inline.
   bool get showsDeclaredPrefixInput => !bodyPolicy.readsArgumentsWindow;
 

@@ -206,6 +206,7 @@ impl ModelProgressTracker {
                         attempt_id,
                         generation,
                         "aggregate:reasoning",
+                        "aggregate:reasoning",
                         false,
                         part,
                         bus,
@@ -217,10 +218,20 @@ impl ModelProgressTracker {
                         seen_text.insert(key, part);
                     }
                     ObservedPartKind::ReasoningText | ObservedPartKind::SummaryText => {
-                        let key = format!("{}:{}", identity.item_id, identity.content_index);
-                        let is_summary = matches!(identity.part, ObservedPartKind::SummaryText);
+                        let item_id = format!("{}:{}", identity.item_id, identity.content_index);
+                        let (baseline_key, is_summary) = match identity.part {
+                            ObservedPartKind::SummaryText => (format!("summary:{item_id}"), true),
+                            ObservedPartKind::ReasoningText => (format!("raw:{item_id}"), false),
+                            ObservedPartKind::OutputText => unreachable!(),
+                        };
                         self.emit_reasoning_part(
-                            attempt_id, generation, &key, is_summary, part, bus,
+                            attempt_id,
+                            generation,
+                            &baseline_key,
+                            &item_id,
+                            is_summary,
+                            part,
+                            bus,
                         );
                     }
                 },
@@ -294,12 +305,13 @@ impl ModelProgressTracker {
         &mut self,
         attempt_id: &str,
         generation: u32,
+        baseline_key: &str,
         item_id: &str,
         is_summary: bool,
         part: &ObservedPart,
         bus: &EventBus,
     ) {
-        match self.active_reasoning.get(item_id) {
+        match self.active_reasoning.get(baseline_key) {
             None => {
                 if !part.is_empty() {
                     bus.emit(CoreEvent::Live(CoreLiveEvent::ReasoningDelta {
@@ -312,7 +324,7 @@ impl ModelProgressTracker {
                     }));
                 }
                 self.active_reasoning
-                    .insert(item_id.to_owned(), part.baseline());
+                    .insert(baseline_key.to_owned(), part.baseline());
             }
             Some(prev) => match part.increment_since(prev) {
                 ContentIncrement::Current => {}
@@ -328,7 +340,7 @@ impl ModelProgressTracker {
                         }));
                     }
                     self.active_reasoning
-                        .insert(item_id.to_owned(), part.baseline());
+                        .insert(baseline_key.to_owned(), part.baseline());
                 }
                 ContentIncrement::Replace(text) => {
                     bus.emit(CoreEvent::Live(CoreLiveEvent::ReasoningDelta {
@@ -340,9 +352,103 @@ impl ModelProgressTracker {
                         is_summary,
                     }));
                     self.active_reasoning
-                        .insert(item_id.to_owned(), part.baseline());
+                        .insert(baseline_key.to_owned(), part.baseline());
                 }
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{ObservedItemKind, ProviderPartIdentity};
+
+    #[test]
+    fn summary_and_raw_reasoning_at_same_item_and_index_do_not_collide() {
+        let (bus, _rx) = EventBus::new();
+        let emitted = Arc::new(std::sync::Mutex::new(Vec::<CoreLiveEvent>::new()));
+
+        #[derive(Debug)]
+        struct Collector(Arc<std::sync::Mutex<Vec<CoreLiveEvent>>>);
+        impl CoreEventSink for Collector {
+            fn emit(&self, event: CoreEvent) {
+                if let CoreEvent::Live(live) = event {
+                    self.0.lock().unwrap().push(live);
+                }
+            }
+        }
+
+        let mut bus = bus;
+        bus.attach_sink(Arc::new(Collector(emitted.clone())));
+        let mut tracker = ModelProgressTracker::default();
+
+        let summary_1 = ObservedPart::new(ObservedPartIdentity::Provider(ProviderPartIdentity {
+            item_id: Arc::from("rs_1"),
+            output_index: Some(0),
+            item_kind: ObservedItemKind::Reasoning,
+            part: ObservedPartKind::SummaryText,
+            content_index: 0,
+        }))
+        .appended("**Plan**");
+
+        let raw_1 = ObservedPart::new(ObservedPartIdentity::Provider(ProviderPartIdentity {
+            item_id: Arc::from("rs_1"),
+            output_index: Some(0),
+            item_kind: ObservedItemKind::Reasoning,
+            part: ObservedPartKind::ReasoningText,
+            content_index: 0,
+        }))
+        .appended("Step 1");
+
+        tracker.observe("att-1", &ModelProgress::new(1, vec![summary_1.clone(), raw_1.clone()]), &bus);
+
+        let summary_2 = summary_1.appended("\n**Execute**");
+        let raw_2 = raw_1.appended(" -> Step 2");
+
+        tracker.observe("att-1", &ModelProgress::new(2, vec![summary_2, raw_2]), &bus);
+
+        let events = emitted.lock().unwrap();
+        assert_eq!(events.len(), 4);
+        assert!(matches!(
+            &events[0],
+            CoreLiveEvent::ReasoningDelta {
+                item_id,
+                text,
+                replace: false,
+                is_summary: true,
+                ..
+            } if item_id == "rs_1:0" && text == "**Plan**"
+        ));
+        assert!(matches!(
+            &events[1],
+            CoreLiveEvent::ReasoningDelta {
+                item_id,
+                text,
+                replace: false,
+                is_summary: false,
+                ..
+            } if item_id == "rs_1:0" && text == "Step 1"
+        ));
+        assert!(matches!(
+            &events[2],
+            CoreLiveEvent::ReasoningDelta {
+                item_id,
+                text,
+                replace: false,
+                is_summary: true,
+                ..
+            } if item_id == "rs_1:0" && text == "\n**Execute**"
+        ));
+        assert!(matches!(
+            &events[3],
+            CoreLiveEvent::ReasoningDelta {
+                item_id,
+                text,
+                replace: false,
+                is_summary: false,
+                ..
+            } if item_id == "rs_1:0" && text == " -> Step 2"
+        ));
     }
 }

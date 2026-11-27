@@ -92,12 +92,14 @@ class StudioCompactChip extends StatelessWidget {
                 Icon(icon, size: 15, color: tone.indicator(context)),
                 const SizedBox(width: 5),
               ],
-              ConstrainedBox(
-                constraints: BoxConstraints(maxWidth: maxWidth),
-                child: Text(
-                  label,
-                  overflow: TextOverflow.ellipsis,
-                  style: context.text.labelSmall?.copyWith(color: foreground),
+              Flexible(
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: maxWidth),
+                  child: Text(
+                    label,
+                    overflow: TextOverflow.ellipsis,
+                    style: context.text.labelSmall?.copyWith(color: foreground),
+                  ),
                 ),
               ),
               if (trailingIcon != null) ...[

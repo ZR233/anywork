@@ -85,51 +85,6 @@ final class BodyWindow {
       Object.hashAll([BodyWindow, offset, text, bytesBase64, totalBytes, eof]);
 }
 
-final class LiveWorkItem {
-  const LiveWorkItem({
-    required this.id,
-    this.callId,
-    required this.kind,
-    required this.toolName,
-    required this.status,
-    required this.summary,
-    this.startedAtMs,
-    this.finishedAtMs,
-  });
-  final String id;
-  final String? callId;
-  final String kind;
-  final String toolName;
-  final String status;
-  final String summary;
-  final int? startedAtMs;
-  final int? finishedAtMs;
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is LiveWorkItem &&
-          id == other.id &&
-          callId == other.callId &&
-          kind == other.kind &&
-          toolName == other.toolName &&
-          status == other.status &&
-          summary == other.summary &&
-          startedAtMs == other.startedAtMs &&
-          finishedAtMs == other.finishedAtMs;
-  @override
-  int get hashCode => Object.hashAll([
-    LiveWorkItem,
-    id,
-    callId,
-    kind,
-    toolName,
-    status,
-    summary,
-    startedAtMs,
-    finishedAtMs,
-  ]);
-}
-
 final class LiveAttention {
   const LiveAttention({
     required this.id,
@@ -1108,11 +1063,11 @@ final class LiveStatusIdle extends LiveStatusPhase {
 
 final class LiveStatusWorking extends LiveStatusPhase {
   LiveStatusWorking({
-    required Iterable<LiveWorkItem> items,
+    required Iterable<WorkGroupMember> items,
     this.reasoningPreview,
     this.startedAtMs,
   }) : items = List.unmodifiable(items);
-  final List<LiveWorkItem> items;
+  final List<WorkGroupMember> items;
   final String? reasoningPreview;
   final int? startedAtMs;
   @override

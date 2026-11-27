@@ -147,11 +147,19 @@ impl SessionRuntime {
                 let definition = ToolDefinition::json(name, description, schema)?;
                 let prepared = prepare_registration(name, &definition, ToolCallPolicy::DirectOnly)?;
                 let foreground = matches!(&kind, Kind::Evaluate);
-                let registration = prepared.attach(ToolHandle::new(QueryTool {
-                    definition,
-                    host: host.clone(),
-                    kind,
-                }));
+                let contract = match &kind {
+                    Kind::Session => "builtin.read_agent_session@1",
+                    Kind::Evaluate => "builtin.evaluate_agent@1",
+                };
+                let registration = prepared
+                    .attach(ToolHandle::new(QueryTool {
+                        definition,
+                        host: host.clone(),
+                        kind,
+                    }))
+                    .with_presentation_contract(pl_core::model::ToolPresentationContract::new(
+                        contract,
+                    ));
                 Ok(if foreground {
                     registration.foreground()
                 } else {

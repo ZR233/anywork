@@ -1,6 +1,7 @@
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/app/theme/studio_tokens.dart';
 import 'package:anywork/src/features/conversation/timeline/timeline_views.dart';
+import 'package:anywork/src/features/conversation/timeline/work_group/work_group_member_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/models.dart' as feed;
 import 'package:flutter_test/flutter_test.dart';
@@ -106,27 +107,31 @@ void main() {
         _host(
           _project(
             feed.LiveStatusWorking(
-              items: const [
-                feed.LiveWorkItem(
+              items: [
+                const feed.WorkGroupReasoning(
                   id: 'reasoning:1',
-                  kind: 'thinking',
-                  toolName: 'thinking',
-                  status: 'completed',
-                  summary: '梳理依赖',
+                  seq: 1,
+                  text: '推理正文 **Markdown**',
+                  summary: '**梳理依赖**',
+                  outcome: 'completed',
                   startedAtMs: 100000,
                   finishedAtMs: 102000,
                 ),
-                feed.LiveWorkItem(
+                feed.WorkGroupToolCall(
                   id: 'call:1',
+                  seq: 2,
                   callId: '1',
-                  kind: 'command',
                   toolName: 'exec',
+                  presentationContract: 'builtin.exec@2',
                   status: 'running',
-                  summary: 'cargo test',
+                  summary: 'exec',
+                  arguments: '{"command":"cargo test"}',
+                  payloadJson: '{}',
+                  bodies: const [],
                   startedAtMs: 102000,
                 ),
               ],
-              reasoningPreview: '梳理依赖',
+              reasoningPreview: '**Header****Summary**',
               startedAtMs: 100000,
             ),
           ),
@@ -137,9 +142,66 @@ void main() {
         find.byKey(const ValueKey('live-work-disclosure:thread-1')),
         findsOneWidget,
       );
-      expect(find.text('思考 · 梳理依赖'), findsOneWidget);
-      expect(find.text('运行 · cargo test'), findsOneWidget);
-      expect(find.byType(ListTile), findsNothing);
+      expect(find.byType(WorkGroupMemberView), findsNWidgets(2));
+      expect(find.text('思考 · 梳理依赖'), findsNothing);
+      expect(find.text('梳理依赖', findRichText: true), findsOneWidget);
+      expect(find.text('正在运行 cargo test'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('live-work-header:thread-1')),
+          matching: find.byType(ListTile),
+        ),
+        findsNothing,
+      );
+
+      final headerRow = tester.widget<TimelineActivityRow>(
+        find.byKey(const ValueKey('live-work-header:thread-1')),
+      );
+      expect(headerRow.label, 'Header Summary');
+      expect(headerRow.tooltip, isNull);
+      final headerTooltip = tester.widget<Tooltip>(
+        find
+            .ancestor(
+              of: find.byKey(const ValueKey('live-work-summary:thread-1')),
+              matching: find.byType(Tooltip),
+            )
+            .first,
+      );
+      expect(headerTooltip.message, isNot(contains('**')));
+      expect(headerTooltip.message!.split('\n').length, lessThanOrEqualTo(2));
+    },
+  );
+
+  testWidgets(
+    'working header falls back to active tool headline without reasoningPreview',
+    (tester) async {
+      await tester.pumpWidget(
+        _host(
+          _project(
+            feed.LiveStatusWorking(
+              items: [
+                feed.WorkGroupToolCall(
+                  id: 'call:1',
+                  seq: 1,
+                  callId: '1',
+                  toolName: 'exec',
+                  presentationContract: 'builtin.exec@2',
+                  status: 'running',
+                  summary: 'exec',
+                  arguments: '{"command":"flutter analyze"}',
+                  payloadJson: '{}',
+                  bodies: const [],
+                  startedAtMs: 100000,
+                ),
+              ],
+              startedAtMs: 100000,
+            ),
+          ),
+          expanded: false,
+        ),
+      );
+      expect(find.text('正在运行 flutter analyze'), findsOneWidget);
+      expect(find.byType(CircularProgressIndicator), findsOneWidget);
     },
   );
 

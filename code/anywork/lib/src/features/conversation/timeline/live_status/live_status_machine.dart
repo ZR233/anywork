@@ -98,19 +98,7 @@ abstract final class LiveStatusMachine {
       ):
         return LiveStatusWorkingState(
           threadId: threadId,
-          items: [
-            for (final item in items)
-              LiveWorkMember(
-                id: item.id,
-                callId: item.callId,
-                kind: item.kind,
-                toolName: item.toolName,
-                status: item.status,
-                summary: item.summary,
-                startedAtMs: item.startedAtMs,
-                finishedAtMs: item.finishedAtMs,
-              ),
-          ],
+          items: items,
           reasoningPreview: reasoningPreview,
           startedAtMs: startedAtMs,
         );
@@ -225,7 +213,7 @@ abstract final class LiveStatusMachine {
             : feed.ConversationActivityKind.runningTool,
         id: 'live-work:$threadId',
         thinkingSummary: reasoningPreview,
-        activeToolCount: items.where((item) => item.isActive).length,
+        activeToolCount: items.where(isLiveWorkMemberActive).length,
       ),
       LiveStatusStreamingState(:final itemId) => activity(
         feed.ConversationActivityKind.responding,

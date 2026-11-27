@@ -317,12 +317,15 @@ void main() {
         const LiveStatusStopping(startedAtMs: 100),
       );
       expect(
-        const LiveWorkItem(
+        WorkGroupToolCall(
           id: 'w1',
-          kind: 'exec',
+          seq: 1,
+          callId: 'call-1',
           toolName: 'shell',
           status: 'completed',
           summary: 'cargo test',
+          payloadJson: '{}',
+          bodies: const [],
           startedAtMs: 10,
           finishedAtMs: 25,
         ).finishedAtMs,

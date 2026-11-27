@@ -15206,6 +15206,294 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Tool'**
   String get liveWorkKindTool;
+
+  /// No description provided for @timelineToolNameReadAgentSession.
+  ///
+  /// In en, this message translates to:
+  /// **'Read agent session'**
+  String get timelineToolNameReadAgentSession;
+
+  /// No description provided for @timelineToolNameEvaluateAgent.
+  ///
+  /// In en, this message translates to:
+  /// **'Evaluate subagent'**
+  String get timelineToolNameEvaluateAgent;
+
+  /// No description provided for @timelineToolNameListAgents.
+  ///
+  /// In en, this message translates to:
+  /// **'List subagents'**
+  String get timelineToolNameListAgents;
+
+  /// No description provided for @timelineToolNameInterruptAgent.
+  ///
+  /// In en, this message translates to:
+  /// **'Interrupt subagent'**
+  String get timelineToolNameInterruptAgent;
+
+  /// No description provided for @timelineToolNameCloseAgent.
+  ///
+  /// In en, this message translates to:
+  /// **'Close subagent'**
+  String get timelineToolNameCloseAgent;
+
+  /// No description provided for @timelineToolNameWaitAgent.
+  ///
+  /// In en, this message translates to:
+  /// **'Wait for subagent'**
+  String get timelineToolNameWaitAgent;
+
+  /// No description provided for @timelineToolReadAgentSessionRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Reading session'**
+  String get timelineToolReadAgentSessionRunning;
+
+  /// No description provided for @timelineToolReadAgentSessionSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Read session'**
+  String get timelineToolReadAgentSessionSucceeded;
+
+  /// No description provided for @timelineToolReadAgentSessionFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to read session'**
+  String get timelineToolReadAgentSessionFailed;
+
+  /// No description provided for @timelineToolEvaluateAgentRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Evaluating subagent'**
+  String get timelineToolEvaluateAgentRunning;
+
+  /// No description provided for @timelineToolEvaluateAgentSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Evaluated subagent'**
+  String get timelineToolEvaluateAgentSucceeded;
+
+  /// No description provided for @timelineToolEvaluateAgentFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Subagent evaluation failed'**
+  String get timelineToolEvaluateAgentFailed;
+
+  /// No description provided for @timelineToolListAgentsRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Listing subagents'**
+  String get timelineToolListAgentsRunning;
+
+  /// No description provided for @timelineToolListAgentsSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Listed subagents'**
+  String get timelineToolListAgentsSucceeded;
+
+  /// No description provided for @timelineToolListAgentsFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to list subagents'**
+  String get timelineToolListAgentsFailed;
+
+  /// No description provided for @timelineToolInterruptAgentRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Interrupting subagent'**
+  String get timelineToolInterruptAgentRunning;
+
+  /// No description provided for @timelineToolInterruptAgentSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Interrupted subagent'**
+  String get timelineToolInterruptAgentSucceeded;
+
+  /// No description provided for @timelineToolInterruptAgentFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to interrupt subagent'**
+  String get timelineToolInterruptAgentFailed;
+
+  /// No description provided for @timelineToolCloseAgentRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Closing subagent'**
+  String get timelineToolCloseAgentRunning;
+
+  /// No description provided for @timelineToolCloseAgentSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Closed subagent'**
+  String get timelineToolCloseAgentSucceeded;
+
+  /// No description provided for @timelineToolCloseAgentFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to close subagent'**
+  String get timelineToolCloseAgentFailed;
+
+  /// No description provided for @timelineToolWaitAgentRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting for subagent'**
+  String get timelineToolWaitAgentRunning;
+
+  /// No description provided for @timelineToolWaitAgentSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Received subagent report'**
+  String get timelineToolWaitAgentSucceeded;
+
+  /// No description provided for @timelineToolWaitAgentFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to wait for subagent'**
+  String get timelineToolWaitAgentFailed;
+
+  /// No description provided for @timelineToolDetailTarget.
+  ///
+  /// In en, this message translates to:
+  /// **'Target'**
+  String get timelineToolDetailTarget;
+
+  /// No description provided for @timelineToolDetailAgent.
+  ///
+  /// In en, this message translates to:
+  /// **'Agent'**
+  String get timelineToolDetailAgent;
+
+  /// No description provided for @timelineToolDetailRole.
+  ///
+  /// In en, this message translates to:
+  /// **'Role'**
+  String get timelineToolDetailRole;
+
+  /// No description provided for @timelineToolDetailRating.
+  ///
+  /// In en, this message translates to:
+  /// **'Rating'**
+  String get timelineToolDetailRating;
+
+  /// No description provided for @timelineToolDetailComment.
+  ///
+  /// In en, this message translates to:
+  /// **'Comment'**
+  String get timelineToolDetailComment;
+
+  /// No description provided for @timelineToolDetailCursor.
+  ///
+  /// In en, this message translates to:
+  /// **'Cursor'**
+  String get timelineToolDetailCursor;
+
+  /// No description provided for @timelineToolDetailCount.
+  ///
+  /// In en, this message translates to:
+  /// **'Count'**
+  String get timelineToolDetailCount;
+
+  /// No description provided for @timelineToolBackgroundStarted.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} moved to background'**
+  String timelineToolBackgroundStarted(String name);
+
+  /// No description provided for @timelineToolBackgrounded.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} running in background'**
+  String timelineToolBackgrounded(String name);
+
+  /// No description provided for @timelineToolWaiting.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} waiting'**
+  String timelineToolWaiting(String name);
+
+  /// No description provided for @timelineToolStateBackgroundStarted.
+  ///
+  /// In en, this message translates to:
+  /// **'Moved to background'**
+  String get timelineToolStateBackgroundStarted;
+
+  /// No description provided for @timelineToolStateBackgrounded.
+  ///
+  /// In en, this message translates to:
+  /// **'Backgrounded'**
+  String get timelineToolStateBackgrounded;
+
+  /// No description provided for @timelineToolStateWaiting.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting'**
+  String get timelineToolStateWaiting;
+
+  /// No description provided for @workGroupAgentRole.
+  ///
+  /// In en, this message translates to:
+  /// **'Role'**
+  String get workGroupAgentRole;
+
+  /// No description provided for @workGroupAgentTask.
+  ///
+  /// In en, this message translates to:
+  /// **'Task'**
+  String get workGroupAgentTask;
+
+  /// No description provided for @workGroupAgentStatus.
+  ///
+  /// In en, this message translates to:
+  /// **'Status'**
+  String get workGroupAgentStatus;
+
+  /// No description provided for @workGroupAgentRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Subagent running · {name}'**
+  String workGroupAgentRunning(String name);
+
+  /// No description provided for @workGroupAgentCompleted.
+  ///
+  /// In en, this message translates to:
+  /// **'Subagent completed · {name}'**
+  String workGroupAgentCompleted(String name);
+
+  /// No description provided for @workGroupAgentFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Subagent failed · {name}'**
+  String workGroupAgentFailed(String name);
+
+  /// No description provided for @workGroupAgentCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Subagent cancelled · {name}'**
+  String workGroupAgentCancelled(String name);
+
+  /// No description provided for @workGroupFileChangeTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'File change'**
+  String get workGroupFileChangeTitle;
+
+  /// No description provided for @workGroupFileChanged.
+  ///
+  /// In en, this message translates to:
+  /// **'Changed file · {path}'**
+  String workGroupFileChanged(String path);
+
+  /// No description provided for @workGroupSkillTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Skill'**
+  String get workGroupSkillTitle;
+
+  /// No description provided for @workGroupSkillActivated.
+  ///
+  /// In en, this message translates to:
+  /// **'Activated skill · {name}'**
+  String workGroupSkillActivated(String name);
 }
 
 class _AppLocalizationsDelegate

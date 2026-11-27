@@ -6,6 +6,7 @@ import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../state/timeline_display_unit.dart';
 import '../state/tool_presentation.dart';
+import '../widgets/timeline_activity_clock.dart';
 import '../widgets/timeline_activity_row.dart';
 import '../widgets/timeline_content_range_view.dart'
     show TimelineBodyReadQualification;
@@ -96,6 +97,7 @@ class TimelineToolItemView extends StatefulWidget {
     this.initiallyExpanded = false,
     this.staticObservation,
     this.workGroupMember = false,
+    this.now,
     this.onExpansionChanged,
     this.markdownBuilder,
     this.additionalContentBuilder,
@@ -111,6 +113,7 @@ class TimelineToolItemView extends StatefulWidget {
   final bool initiallyExpanded;
   final bool? staticObservation;
   final bool workGroupMember;
+  final DateTime Function()? now;
   final ValueChanged<bool>? onExpansionChanged;
   final TimelineToolMarkdownBuilder? markdownBuilder;
   final WidgetBuilder? additionalContentBuilder;
@@ -348,59 +351,80 @@ class _TimelineToolItemViewState extends State<TimelineToolItemView> {
     required bool expandable,
   }) {
     final active = summary.active && !_isStaticObservation;
-    switch (effectiveIcon) {
-      case TimelineToolIconWidget(:final builder, :final fallbackIcon):
-        final iconState = TimelineToolRowIconState(
-          active: active,
-          expanded: expanded,
-          isIssue: summary.isIssue,
-          isStopped: summary.isStopped,
-          staticObservation: _isStaticObservation,
-          statusString: widget.item.statusString,
-        );
-        return TimelineActivityRow(
-          icon: fallbackIcon,
-          leading: Builder(builder: (ctx) => builder(ctx, iconState)),
-          label: summary.label,
-          active: active,
-          isIssue: summary.isIssue,
-          expanded: expanded,
-          expandable: expandable,
-          tooltip: summary.tooltip,
-          meta: summary.meta,
-        );
-      case TimelineToolIconData(
-        :final icon,
-        :final color,
-        :final activeIndicatorStyle,
-        :final idleIndicatorStyle,
-        :final preserveWhenStopped,
-        :final preserveWhenIssue,
-      ):
-        final resolvedIcon = summary.isStopped && !preserveWhenStopped
-            ? Icons.stop_circle_outlined
-            : icon;
-        final rowIsIssue = summary.isIssue && !preserveWhenIssue;
-        final inWorkGroup =
-            widget.workGroupMember || _group?.current?.body is WorkDisplayBlock;
-        final runningStyle =
-            inWorkGroup &&
-                activeIndicatorStyle ==
-                    TimelineActivityIndicatorStyle.restingCat
-            ? TimelineActivityIndicatorStyle.circularProgress
-            : activeIndicatorStyle;
-        return TimelineActivityRow(
-          icon: resolvedIcon,
-          iconColor: color,
-          label: summary.label,
-          active: active,
-          indicatorStyle: active ? runningStyle : idleIndicatorStyle,
-          isIssue: rowIsIssue,
-          expanded: expanded,
-          expandable: expandable,
-          tooltip: summary.tooltip,
-          meta: summary.meta,
-        );
+    Widget buildActivityRow(String? meta) {
+      switch (effectiveIcon) {
+        case TimelineToolIconWidget(:final builder, :final fallbackIcon):
+          final iconState = TimelineToolRowIconState(
+            active: active,
+            expanded: expanded,
+            isIssue: summary.isIssue,
+            isStopped: summary.isStopped,
+            staticObservation: _isStaticObservation,
+            statusString: widget.item.statusString,
+          );
+          return TimelineActivityRow(
+            icon: fallbackIcon,
+            leading: Builder(builder: (ctx) => builder(ctx, iconState)),
+            label: summary.label,
+            active: active,
+            isIssue: summary.isIssue,
+            expanded: expanded,
+            expandable: expandable,
+            tooltip: summary.tooltip,
+            meta: meta,
+          );
+        case TimelineToolIconData(
+          :final icon,
+          :final color,
+          :final activeIndicatorStyle,
+          :final idleIndicatorStyle,
+          :final preserveWhenStopped,
+          :final preserveWhenIssue,
+        ):
+          final resolvedIcon = summary.isStopped && !preserveWhenStopped
+              ? Icons.stop_circle_outlined
+              : icon;
+          final rowIsIssue = summary.isIssue && !preserveWhenIssue;
+          final inWorkGroup =
+              widget.workGroupMember ||
+              _group?.current?.body is WorkDisplayBlock;
+          final runningStyle =
+              inWorkGroup &&
+                  activeIndicatorStyle ==
+                      TimelineActivityIndicatorStyle.restingCat
+              ? TimelineActivityIndicatorStyle.circularProgress
+              : activeIndicatorStyle;
+          return TimelineActivityRow(
+            icon: resolvedIcon,
+            iconColor: color,
+            label: summary.label,
+            active: active,
+            indicatorStyle: active ? runningStyle : idleIndicatorStyle,
+            isIssue: rowIsIssue,
+            expanded: expanded,
+            expandable: expandable,
+            tooltip: summary.tooltip,
+            meta: meta,
+          );
+      }
     }
+
+    final showLiveClock =
+        active &&
+        summary.meta == null &&
+        widget.item.createdAt != null &&
+        (_adapter.showsElapsedDuration || widget.now != null);
+    if (!showLiveClock) {
+      return buildActivityRow(summary.meta);
+    }
+    return TimelineActivityClock(
+      startedAtMillis: widget.item.createdAt!.millisecondsSinceEpoch,
+      finishedAtMillis: widget.item.completedAt?.millisecondsSinceEpoch,
+      running: true,
+      now: widget.now,
+      builder: (context, seconds) => buildActivityRow(
+        seconds == null ? null : activityDurationLabel(context, seconds),
+      ),
+    );
   }
 }

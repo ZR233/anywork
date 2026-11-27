@@ -12,29 +12,43 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use pl_core::model::ModelRecoveryPhase;
+use pl_core::model::{ModelRecoveryPhase, ToolProgress};
 use pl_core::thread::{CoreLiveEvent, ExecutionPhase};
 
-use crate::ChatTerminalOutcome;
-use crate::history::{
-    HistoryBodyRole, HistoryEntityState, HistoryEventKind, HistoryEventRecord, HistoryTimelineRole,
-    decode_event_envelope,
-};
+use crate::history::{HistoryEventKind, HistoryEventRecord, HistoryTimelineRole};
 
-use super::models::{LiveAttention, LiveStatusPhase, LiveStatusSnapshot, LiveWorkItem};
+use super::member_decoder::{decode_work_group_member, merge_work_group_member};
+use super::models::{LiveAttention, LiveStatusPhase, LiveStatusSnapshot, WorkGroupMember};
 
 pub const STREAMING_TEXT_COALESCE_INTERVAL: Duration = Duration::from_millis(16);
 const REASONING_PREVIEW_LIMIT: usize = 240;
-const TOOL_SUMMARY_LIMIT: usize = 160;
+const TOOL_PROGRESS_TAIL_BYTES: usize = 2048;
+
+#[derive(Debug, Clone)]
+struct LiveReasoningBuffer {
+    attempt_id: String,
+    item_id: String,
+    work_item_id: String,
+    summary_text: String,
+    body_text: String,
+    started_at_ms: i64,
+    settled: bool,
+}
+
+impl LiveReasoningBuffer {
+    fn preview(&self) -> Option<String> {
+        latest_reasoning_summary_preview(&self.summary_text)
+            .or_else(|| latest_reasoning_summary_preview(&self.body_text))
+    }
+}
 
 #[derive(Debug, Default)]
 struct State {
     revision: u64,
     phase: Option<LiveStatusPhase>,
-    working_items: Vec<LiveWorkItem>,
+    working_items: Vec<WorkGroupMember>,
     reasoning_preview: Option<String>,
-    reasoning_summary_text: String,
-    reasoning_body_text: String,
+    reasoning_buffers: Vec<LiveReasoningBuffer>,
     reasoning_dirty: bool,
     working_started_at_ms: Option<i64>,
     stream_text: String,
@@ -65,8 +79,7 @@ impl State {
     fn clear_working_container(&mut self) {
         self.working_items.clear();
         self.reasoning_preview = None;
-        self.reasoning_summary_text.clear();
-        self.reasoning_body_text.clear();
+        self.reasoning_buffers.clear();
         self.reasoning_dirty = false;
         self.working_started_at_ms = None;
     }
@@ -118,81 +131,102 @@ impl State {
         self.suppressed_by_interaction = false;
     }
 
-    fn upsert_work_item(&mut self, item: LiveWorkItem) {
-        if let Some(existing) = self.working_items.iter_mut().find(|existing| {
-            existing.id == item.id
-                || (existing.call_id.is_some() && existing.call_id == item.call_id)
-        }) {
-            let started_at_ms = existing.started_at_ms.or(item.started_at_ms);
-            let kind = if existing.kind == "tool" && item.kind != "tool" {
-                item.kind
-            } else {
-                existing.kind.clone()
-            };
-            let should_replace_summary = is_informative_summary(&item.summary, &item.tool_name)
-                && (item.finished_at_ms.is_none()
-                    || !is_informative_summary(&existing.summary, &existing.tool_name));
-            let summary = if should_replace_summary {
-                item.summary
-            } else {
-                existing.summary.clone()
-            };
-            existing.status = item.status;
-            existing.kind = kind;
-            existing.summary = summary;
-            existing.started_at_ms = started_at_ms;
-            if item.finished_at_ms.is_some() {
-                existing.finished_at_ms = item.finished_at_ms;
-            }
+    fn upsert_work_member(&mut self, member: WorkGroupMember) {
+        if let Some(existing) = self
+            .working_items
+            .iter_mut()
+            .find(|existing| existing.id() == member.id())
+        {
+            merge_work_group_member(existing, member);
         } else {
-            self.working_items.push(item);
+            self.working_items.push(member);
         }
     }
 
-    fn upsert_reasoning_completed(
-        &mut self,
-        entity_id: &str,
-        summary: Option<String>,
-        status: String,
-        started_at_ms: Option<i64>,
-        finished_at_ms: i64,
-    ) {
-        let exact_id = format!("reasoning:{entity_id}");
+    fn latest_active_reasoning_preview(&self) -> Option<String> {
+        self.reasoning_buffers
+            .iter()
+            .rev()
+            .filter(|buf| !buf.settled)
+            .find_map(LiveReasoningBuffer::preview)
+    }
+
+    fn upsert_reasoning_completed(&mut self, mut decoded: WorkGroupMember, now_ms: i64) {
+        let entity_id = decoded.id().to_owned();
+        let prefixed_id = format!("reasoning:{entity_id}");
         let idx = self
             .working_items
             .iter()
-            .position(|item| item.id == exact_id)
+            .position(|item| {
+                matches!(
+                    item,
+                    WorkGroupMember::Reasoning { id, .. }
+                        if id == &entity_id || id == &prefixed_id
+                )
+            })
             .or_else(|| {
-                self.working_items
-                    .iter()
-                    .rposition(|item| item.kind == "thinking" && item.status == "running")
+                self.working_items.iter().position(|item| {
+                    matches!(
+                        item,
+                        WorkGroupMember::Reasoning {
+                            outcome,
+                            finished_at_ms,
+                            ..
+                        } if outcome == "running" && finished_at_ms.is_none()
+                    )
+                })
             });
-        let clean_summary = summary.as_deref().and_then(bounded_tail_preview);
-        if let Some(summary_text) = &clean_summary
-            && self.reasoning_summary_text.trim().is_empty()
-        {
-            self.reasoning_preview = Some(summary_text.clone());
-        }
+
         if let Some(idx) = idx {
-            let existing = &mut self.working_items[idx];
-            existing.status = status;
-            existing.started_at_ms = existing.started_at_ms.or(started_at_ms);
-            existing.finished_at_ms = Some(finished_at_ms);
-            if let Some(summary_text) = clean_summary {
-                existing.summary = summary_text;
+            let (old_id, old_started) = match &self.working_items[idx] {
+                WorkGroupMember::Reasoning {
+                    id, started_at_ms, ..
+                } => (id.clone(), *started_at_ms),
+                _ => unreachable!(),
+            };
+            if let WorkGroupMember::Reasoning {
+                started_at_ms,
+                finished_at_ms,
+                ..
+            } = &mut decoded
+            {
+                if started_at_ms.is_none() {
+                    *started_at_ms = old_started.or(Some(now_ms));
+                }
+                if finished_at_ms.is_none() {
+                    *finished_at_ms = Some(now_ms);
+                }
             }
+            self.reasoning_buffers
+                .retain(|buf| buf.work_item_id != old_id);
+            self.working_items[idx] = decoded.clone();
         } else {
-            self.working_items.push(LiveWorkItem {
-                id: exact_id,
-                call_id: None,
-                kind: "thinking".into(),
-                tool_name: "thinking".into(),
-                status,
-                summary: clean_summary.unwrap_or_default(),
-                started_at_ms: started_at_ms.or(Some(finished_at_ms)),
-                finished_at_ms: Some(finished_at_ms),
-            });
+            if let WorkGroupMember::Reasoning {
+                started_at_ms,
+                finished_at_ms,
+                ..
+            } = &mut decoded
+            {
+                if started_at_ms.is_none() {
+                    *started_at_ms = Some(now_ms);
+                }
+                if finished_at_ms.is_none() {
+                    *finished_at_ms = Some(now_ms);
+                }
+            }
+            self.working_items.push(decoded.clone());
         }
+
+        let completed_preview = match &decoded {
+            WorkGroupMember::Reasoning { summary, text, .. } => {
+                latest_reasoning_summary_preview(summary)
+                    .or_else(|| latest_reasoning_summary_preview(text))
+            }
+            _ => None,
+        };
+        self.reasoning_preview = self
+            .latest_active_reasoning_preview()
+            .or(completed_preview);
     }
 }
 
@@ -207,230 +241,122 @@ fn now_millis() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
-fn truncate_single_line(text: &str, max_chars: usize) -> Option<String> {
-    let single = text
-        .lines()
+/// Extracts the latest single-line reasoning summary preview without concatenating older
+/// `**Heading**` sections or truncating from the left into broken Markdown markers.
+#[must_use]
+pub fn latest_reasoning_summary_preview(text: &str) -> Option<String> {
+    let line = text
+        .rsplit(['\n', '\r'])
         .map(str::trim)
-        .find(|line| !line.is_empty())?
-        .trim();
-    if single.is_empty() {
+        .find(|line| !line.is_empty())?;
+    let segment = extract_latest_bold_segment(line).trim();
+    if segment.is_empty() {
         return None;
     }
-    let count = single.chars().count();
-    if count <= max_chars {
-        Some(single.to_owned())
+    if segment.chars().count() <= REASONING_PREVIEW_LIMIT {
+        return Some(segment.to_owned());
+    }
+
+    let head_limit = REASONING_PREVIEW_LIMIT.saturating_sub(1);
+    let head_with_ellipsis: String = segment.chars().take(head_limit).collect();
+    let needs_closing_bold =
+        segment.starts_with("**") && head_with_ellipsis.matches("**").count() % 2 == 1;
+    if needs_closing_bold {
+        let mut head: String = segment
+            .chars()
+            .take(REASONING_PREVIEW_LIMIT.saturating_sub(3))
+            .collect();
+        if head.ends_with('*') && !head.ends_with("**") {
+            head.pop();
+        }
+        Some(format!("{head}…**"))
     } else {
-        let head: String = single.chars().take(max_chars.saturating_sub(1)).collect();
+        let mut head = head_with_ellipsis;
+        if segment.starts_with("**") && head.ends_with('*') && !head.ends_with("**") {
+            head.pop();
+        }
         Some(format!("{head}…"))
     }
 }
 
-fn bounded_tail_preview(text: &str) -> Option<String> {
-    let trimmed = text.lines().rev().find(|l| !l.trim().is_empty())?.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let count = trimmed.chars().count();
-    if count <= REASONING_PREVIEW_LIMIT {
-        Some(trimmed.to_owned())
-    } else {
-        let skipped: String = trimmed
-            .chars()
-            .skip(count - REASONING_PREVIEW_LIMIT)
-            .collect();
-        Some(format!("…{skipped}"))
-    }
+fn has_meaningful_content(slice: &str) -> bool {
+    slice.chars().any(|ch| ch != '*' && !ch.is_whitespace())
 }
 
-fn is_informative_summary(summary: &str, tool_name: &str) -> bool {
-    let trimmed = summary.trim();
-    !trimmed.is_empty() && trimmed != "tool" && trimmed != tool_name
-}
+fn extract_latest_bold_segment(line: &str) -> &str {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    let mut in_bold = false;
+    let mut saw_quad_boundary = false;
+    let mut last_quad_start: Option<usize> = None;
+    let mut open_positions: Vec<usize> = Vec::new();
 
-fn classify_live_tool_kind(tool_name: &str, contract: Option<&str>) -> &'static str {
-    let normalized = tool_name.trim();
-    if matches!(
-        normalized,
-        "exec" | "exec_command" | "shell" | "write_stdin" | "bash"
-    ) || contract.is_some_and(|c| c.contains("exec"))
-    {
-        return "command";
-    }
-    if matches!(normalized, "view_image" | "read_image") {
-        return "readImage";
-    }
-    if matches!(
-        normalized,
-        "read_file" | "read" | "read_session_note" | "stat_path"
-    ) {
-        return "read";
-    }
-    if matches!(
-        normalized,
-        "grep"
-            | "find_files"
-            | "web_search"
-            | "deepseek_web_search"
-            | "deepseek_web_fetch"
-            | "search_session_note"
-            | "lsp_query"
-            | "lsp_capabilities"
-            | "lsp_status"
-    ) {
-        return "search";
-    }
-    if matches!(
-        normalized,
-        "apply_patch"
-            | "edit_file"
-            | "write_file"
-            | "create_directory"
-            | "delete_path"
-            | "move_path"
-            | "copy_path"
-            | "apply_session_note_patch"
-            | "write_session_note"
-    ) {
-        return "edit";
-    }
-    if matches!(normalized, "wait" | "sleep") {
-        return "wait";
-    }
-    if matches!(normalized, "spawn_agent" | "send_message" | "delegate") {
-        return "agent";
-    }
-    "tool"
-}
-
-fn extract_argument_summary(arguments_json: &str) -> Option<String> {
-    let trimmed = arguments_json.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed)
-        && let Some(obj) = value.as_object()
-    {
-        for key in [
-            "command",
-            "cmd",
-            "path",
-            "file_path",
-            "filePath",
-            "target",
-            "query",
-            "pattern",
-            "url",
-            "title",
-            "task",
-            "message",
-            "recipient",
-        ] {
-            if let Some(s) = obj.get(key).and_then(|v| v.as_str())
-                && let Some(clean) = truncate_single_line(s, TOOL_SUMMARY_LIMIT)
-            {
-                return Some(clean);
+    while i < bytes.len() {
+        if bytes[i..].starts_with(b"****") {
+            let candidate = i + 2;
+            if has_meaningful_content(&line[candidate..]) {
+                saw_quad_boundary = true;
+                last_quad_start = Some(candidate);
+                open_positions.push(candidate);
             }
+            in_bold = true;
+            i += 4;
+            continue;
         }
-        for key in ["paths", "files", "queries"] {
-            if let Some(arr) = obj.get(key).and_then(|v| v.as_array())
-                && let Some(first) = arr.first().and_then(|v| v.as_str())
-                && let Some(clean) = truncate_single_line(first, TOOL_SUMMARY_LIMIT)
-            {
-                return Some(clean);
+        if bytes[i..].starts_with(b"**") {
+            if !in_bold {
+                in_bold = true;
+                if has_meaningful_content(&line[i..]) {
+                    open_positions.push(i);
+                }
+            } else {
+                in_bold = false;
             }
+            i += 2;
+            continue;
+        }
+        let ch_len = line[i..].chars().next().map_or(1, char::len_utf8);
+        i += ch_len;
+    }
+
+    if saw_quad_boundary || open_positions.len() >= 2 {
+        let start = last_quad_start
+            .into_iter()
+            .chain(open_positions.last().copied())
+            .max()
+            .unwrap_or(0);
+        return &line[start..];
+    }
+
+    if let Some(&open_pos) = open_positions.last()
+        && open_pos > 0
+        && !line[..open_pos].ends_with(char::is_whitespace)
+    {
+        return &line[open_pos..];
+    }
+
+    line
+}
+
+fn tool_progress_tail(progress: &ToolProgress) -> Option<String> {
+    let part = progress.parts().iter().rev().find(|p| !p.is_empty())?;
+    let block = part.content();
+    let len = block.len();
+    if len == 0 {
+        return None;
+    }
+    let start = len.saturating_sub(TOOL_PROGRESS_TAIL_BYTES);
+    for offset in 0..4 {
+        let candidate = start.saturating_add(offset);
+        if candidate > len {
+            break;
+        }
+        if let Some(text) = block.suffix_since(candidate) {
+            let trimmed = text.trim();
+            return (!trimmed.is_empty()).then(|| trimmed.to_owned());
         }
     }
     None
-}
-
-fn status_from_entity_state(state: &HistoryEntityState) -> &'static str {
-    match state {
-        HistoryEntityState::Unknown | HistoryEntityState::KnownActive { .. } => "running",
-        HistoryEntityState::KnownTerminal { outcome } => match outcome {
-            ChatTerminalOutcome::Completed => "completed",
-            ChatTerminalOutcome::Failed => "failed",
-            ChatTerminalOutcome::Cancelled => "cancelled",
-            ChatTerminalOutcome::Transferred => "backgrounded",
-        },
-    }
-}
-
-fn extract_live_tool_info(
-    record: &HistoryEventRecord,
-    tool_name: &str,
-) -> (
-    String,
-    String,
-    Option<&'static str>,
-    Option<i64>,
-    Option<i64>,
-) {
-    let default_kind = classify_live_tool_kind(tool_name, None).to_owned();
-    let Ok(envelope) = decode_event_envelope(record) else {
-        return (default_kind, tool_name.to_owned(), None, None, None);
-    };
-    let kind = classify_live_tool_kind(tool_name, envelope.meta.presentation_contract.as_deref())
-        .to_owned();
-    let summary = envelope
-        .bodies
-        .iter()
-        .find(|b| b.key == "tool.arguments" || b.role == HistoryBodyRole::ToolArguments.as_str())
-        .and_then(|b| b.inline_text.as_deref())
-        .and_then(extract_argument_summary)
-        .unwrap_or_else(|| tool_name.to_owned());
-
-    let terminal_status = match record.kind {
-        HistoryEventKind::ToolCompleted => {
-            let state_kind = envelope
-                .data
-                .get("state")
-                .and_then(|s| s.get("kind"))
-                .and_then(|v| v.as_str());
-            Some(match state_kind {
-                Some("failed") => "failed",
-                Some("denied") => "denied",
-                Some("cancelled") | Some("interrupted") => "cancelled",
-                Some("succeeded") => "completed",
-                _ => status_from_entity_state(&envelope.meta.state),
-            })
-        }
-        _ => None,
-    };
-
-    (
-        kind,
-        summary,
-        terminal_status,
-        envelope.meta.started_at,
-        envelope.meta.finished_at,
-    )
-}
-
-fn extract_reasoning_info(
-    record: &HistoryEventRecord,
-) -> (Option<String>, &'static str, Option<i64>, Option<i64>) {
-    let Ok(envelope) = decode_event_envelope(record) else {
-        return (None, "completed", None, None);
-    };
-    let summary = envelope
-        .bodies
-        .iter()
-        .find(|b| {
-            b.key == "part.summaryText.0" || b.role == HistoryBodyRole::ReasoningSummary.as_str()
-        })
-        .and_then(|b| b.inline_text.as_deref())
-        .map(str::to_owned);
-    let status = status_from_entity_state(&envelope.meta.state);
-    (
-        summary,
-        if status == "running" {
-            "completed"
-        } else {
-            status
-        },
-        envelope.meta.started_at,
-        envelope.meta.finished_at,
-    )
 }
 
 impl LiveStatusDataLayer {
@@ -571,37 +497,64 @@ impl LiveStatusDataLayer {
                 Some(state.snapshot())
             }
             CoreLiveEvent::ReasoningDelta {
+                attempt_id,
                 item_id,
                 text,
                 replace,
                 is_summary,
                 ..
             } => {
-                if *is_summary {
-                    if *replace {
-                        state.reasoning_summary_text = text.clone();
-                    } else {
-                        state.reasoning_summary_text.push_str(text);
-                    }
-                } else if *replace {
-                    state.reasoning_body_text = text.clone();
+                let idx = if let Some(existing_idx) = state.reasoning_buffers.iter().position(|b| {
+                    b.attempt_id == *attempt_id && b.item_id == *item_id && !b.settled
+                }) {
+                    existing_idx
                 } else {
-                    state.reasoning_body_text.push_str(text);
-                }
+                    let work_item_id = format!("reasoning:{attempt_id}:{item_id}");
+                    state.reasoning_buffers.push(LiveReasoningBuffer {
+                        attempt_id: attempt_id.clone(),
+                        item_id: item_id.clone(),
+                        work_item_id,
+                        summary_text: String::new(),
+                        body_text: String::new(),
+                        started_at_ms: now_ms,
+                        settled: false,
+                    });
+                    state.reasoning_buffers.len() - 1
+                };
 
-                let preview = bounded_tail_preview(&state.reasoning_summary_text)
-                    .or_else(|| bounded_tail_preview(&state.reasoning_body_text));
-                state.reasoning_preview = preview.clone();
+                let (work_item_id, started_at_ms, body_text, summary_preview) = {
+                    let buf = &mut state.reasoning_buffers[idx];
+                    let target = if *is_summary {
+                        &mut buf.summary_text
+                    } else {
+                        &mut buf.body_text
+                    };
+                    if *replace {
+                        *target = text.clone();
+                    } else {
+                        target.push_str(text);
+                    }
+                    (
+                        buf.work_item_id.clone(),
+                        buf.started_at_ms,
+                        buf.body_text.clone(),
+                        buf.preview(),
+                    )
+                };
+
+                if let Some(active_preview) = state.latest_active_reasoning_preview() {
+                    state.reasoning_preview = Some(active_preview);
+                }
                 state.turn_active = true;
 
-                state.upsert_work_item(LiveWorkItem {
-                    id: format!("reasoning:{item_id}"),
-                    call_id: None,
-                    kind: "thinking".into(),
-                    tool_name: "thinking".into(),
-                    status: "running".into(),
-                    summary: preview.unwrap_or_default(),
-                    started_at_ms: Some(now_ms),
+                state.upsert_work_member(WorkGroupMember::Reasoning {
+                    id: work_item_id,
+                    seq: 0,
+                    text: body_text,
+                    summary: summary_preview.unwrap_or_default(),
+                    body_ref: None,
+                    outcome: "running".into(),
+                    started_at_ms: Some(started_at_ms),
                     finished_at_ms: None,
                 });
 
@@ -622,22 +575,41 @@ impl LiveStatusDataLayer {
                 ..
             } => {
                 state.turn_active = true;
-                let preview = progress
-                    .parts()
-                    .last()
-                    .and_then(|part| bounded_tail_preview(&part.text()))
-                    .unwrap_or_else(|| tool_id.clone());
-                let kind = classify_live_tool_kind(tool_id, None).to_owned();
-                state.upsert_work_item(LiveWorkItem {
-                    id: format!("call:{call_id}"),
-                    call_id: Some(call_id.clone()),
-                    kind,
-                    tool_name: tool_id.clone(),
-                    status: "running".into(),
-                    summary: preview,
-                    started_at_ms: Some(now_ms),
-                    finished_at_ms: None,
-                });
+                let tail = tool_progress_tail(progress);
+                if let Some(WorkGroupMember::ToolCall { result_preview, .. }) =
+                    state.working_items.iter_mut().find(|member| {
+                        matches!(
+                            member,
+                            WorkGroupMember::ToolCall {
+                                call_id: existing_call_id,
+                                ..
+                            } if existing_call_id == call_id
+                        )
+                    })
+                {
+                    if let Some(tail) = tail {
+                        *result_preview = Some(tail);
+                    }
+                } else {
+                    state.working_items.push(WorkGroupMember::ToolCall {
+                        id: format!("call:{call_id}"),
+                        seq: 0,
+                        call_id: call_id.clone(),
+                        turn_id: None,
+                        tool_name: tool_id.clone(),
+                        presentation_contract: None,
+                        status: "running".into(),
+                        summary: tool_id.clone(),
+                        arguments: None,
+                        result_preview: tail,
+                        payload_json: String::new(),
+                        bodies: Vec::new(),
+                        wait_json: None,
+                        started_at_ms: Some(now_ms),
+                        finished_at_ms: None,
+                    });
+                }
+
                 if !matches!(
                     state.current_phase(),
                     LiveStatusPhase::StreamingText { .. }
@@ -791,8 +763,7 @@ impl LiveStatusDataLayer {
                 }
                 let needs_reset = !state.working_items.is_empty()
                     || state.reasoning_preview.is_some()
-                    || !state.reasoning_summary_text.is_empty()
-                    || !state.reasoning_body_text.is_empty()
+                    || !state.reasoning_buffers.is_empty()
                     || !state.stream_text.is_empty()
                     || state.stream_attempt_id.is_some()
                     || state.stream_dirty
@@ -831,6 +802,7 @@ impl LiveStatusDataLayer {
                         | HistoryEventKind::ToolBackgrounded
                         | HistoryEventKind::ReasoningCompleted
                         | HistoryEventKind::AgentCompleted
+                        | HistoryEventKind::ItemRecorded
                 );
                 if matches!(state.current_phase(), LiveStatusPhase::Idle)
                     && !state.turn_active
@@ -841,80 +813,75 @@ impl LiveStatusDataLayer {
 
                 match &record.kind {
                     HistoryEventKind::ReasoningCompleted => {
-                        let entity_id = record
-                            .entity_id
-                            .clone()
-                            .unwrap_or_else(|| record.event_id.clone());
-                        let (summary, status, started_at, finished_at) =
-                            extract_reasoning_info(record);
+                        let member = decode_work_group_member(record)?;
+                        if !matches!(member, WorkGroupMember::Reasoning { .. }) {
+                            return None;
+                        }
                         state.turn_active = true;
-                        state.upsert_reasoning_completed(
-                            &entity_id,
-                            summary,
-                            status.into(),
-                            started_at,
-                            finished_at.unwrap_or(now_ms),
-                        );
+                        state.upsert_reasoning_completed(member, now_ms);
                     }
                     HistoryEventKind::ToolCalled
                     | HistoryEventKind::ToolWaitingApproval
                     | HistoryEventKind::ToolBackgrounded
                     | HistoryEventKind::ToolCancelRequested
                     | HistoryEventKind::ToolCompleted => {
-                        let call_id = record
-                            .call_id
-                            .clone()
-                            .or_else(|| record.entity_id.clone())
-                            .unwrap_or_else(|| record.event_id.clone());
-                        let tool_name = record.tool_name.clone().unwrap_or_else(|| "tool".into());
-                        let (kind, summary, terminal_status, started_at, finished_at) =
-                            extract_live_tool_info(record, &tool_name);
-                        let status = match record.kind {
-                            HistoryEventKind::ToolCalled => "running",
-                            HistoryEventKind::ToolWaitingApproval => "awaitingApproval",
-                            HistoryEventKind::ToolBackgrounded => "backgrounded",
-                            HistoryEventKind::ToolCancelRequested => "cancelling",
-                            HistoryEventKind::ToolCompleted => {
-                                terminal_status.unwrap_or("completed")
-                            }
-                            _ => "unknown",
-                        };
-                        state
-                            .attentions
-                            .retain(|a| a.call_id.as_deref() != Some(call_id.as_str()));
-                        let is_done = matches!(
+                        let mut member = decode_work_group_member(record)?;
+                        if let WorkGroupMember::ToolCall {
+                            call_id,
                             status,
-                            "completed" | "failed" | "denied" | "cancelled" | "backgrounded"
-                        );
+                            started_at_ms,
+                            finished_at_ms,
+                            ..
+                        } = &mut member
+                        {
+                            state
+                                .attentions
+                                .retain(|a| a.call_id.as_deref() != Some(call_id.as_str()));
+                            if started_at_ms.is_none() {
+                                *started_at_ms = Some(now_ms);
+                            }
+                            let is_done = matches!(
+                                status.as_str(),
+                                "completed"
+                                    | "succeeded"
+                                    | "failed"
+                                    | "denied"
+                                    | "cancelled"
+                                    | "interrupted"
+                                    | "backgrounded"
+                            );
+                            if is_done && finished_at_ms.is_none() {
+                                *finished_at_ms = Some(now_ms);
+                            }
+                        }
                         state.turn_active = true;
-                        state.upsert_work_item(LiveWorkItem {
-                            id: format!("call:{call_id}"),
-                            call_id: Some(call_id),
-                            kind,
-                            tool_name,
-                            status: status.into(),
-                            summary,
-                            started_at_ms: Some(started_at.unwrap_or(now_ms)),
-                            finished_at_ms: is_done.then(|| finished_at.unwrap_or(now_ms)),
-                        });
+                        state.upsert_work_member(member);
                     }
-                    HistoryEventKind::AgentSpawned | HistoryEventKind::AgentCompleted => {
-                        let entity_id = record
-                            .entity_id
-                            .clone()
-                            .unwrap_or_else(|| record.event_id.clone());
-                        let terminal = record.kind == HistoryEventKind::AgentCompleted;
+                    HistoryEventKind::AgentSpawned
+                    | HistoryEventKind::AgentCompleted
+                    | HistoryEventKind::ItemRecorded => {
+                        let mut member = decode_work_group_member(record)?;
+                        if let WorkGroupMember::Agent {
+                            status,
+                            started_at_ms,
+                            finished_at_ms,
+                            ..
+                        } = &mut member
+                        {
+                            if started_at_ms.is_none() {
+                                *started_at_ms = Some(now_ms);
+                            }
+                            let is_done = record.kind == HistoryEventKind::AgentCompleted
+                                || matches!(
+                                    status.as_str(),
+                                    "completed" | "failed" | "cancelled"
+                                );
+                            if is_done && finished_at_ms.is_none() {
+                                *finished_at_ms = Some(now_ms);
+                            }
+                        }
                         state.turn_active = true;
-                        state.upsert_work_item(LiveWorkItem {
-                            id: entity_id.clone(),
-                            call_id: None,
-                            kind: "agent".into(),
-                            tool_name: "agent".into(),
-                            status: if terminal { "completed" } else { "running" }.into(),
-                            summary: record.tool_name.clone().unwrap_or(entity_id),
-                            started_at_ms: Some(now_ms),
-                            finished_at_ms: terminal.then_some(now_ms),
-                        });
+                        state.upsert_work_member(member);
                     }
                     _ => return None,
                 }

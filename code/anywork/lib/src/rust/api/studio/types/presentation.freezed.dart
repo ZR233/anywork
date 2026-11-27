@@ -1001,7 +1001,7 @@ return stopping(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  idle,TResult Function( List<BridgeLiveWorkItem> items,  String? reasoningPreview,  PlatformInt64? startedAtMs)?  working,TResult Function( String attemptId,  String itemId,  String text,  PlatformInt64? startedAtMs)?  streamingText,TResult Function( bool manual,  PlatformInt64? startedAtMs)?  compacting,TResult Function( String attemptId,  String message,  BigInt? retryAfterMs,  int attempt,  int maxAttempts)?  reconnecting,TResult Function( PlatformInt64? startedAtMs)?  stopping,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  idle,TResult Function( List<BridgeWorkGroupMember> items,  String? reasoningPreview,  PlatformInt64? startedAtMs)?  working,TResult Function( String attemptId,  String itemId,  String text,  PlatformInt64? startedAtMs)?  streamingText,TResult Function( bool manual,  PlatformInt64? startedAtMs)?  compacting,TResult Function( String attemptId,  String message,  BigInt? retryAfterMs,  int attempt,  int maxAttempts)?  reconnecting,TResult Function( PlatformInt64? startedAtMs)?  stopping,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case BridgeLiveStatusPhase_Idle() when idle != null:
 return idle();case BridgeLiveStatusPhase_Working() when working != null:
@@ -1027,7 +1027,7 @@ return stopping(_that.startedAtMs);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  idle,required TResult Function( List<BridgeLiveWorkItem> items,  String? reasoningPreview,  PlatformInt64? startedAtMs)  working,required TResult Function( String attemptId,  String itemId,  String text,  PlatformInt64? startedAtMs)  streamingText,required TResult Function( bool manual,  PlatformInt64? startedAtMs)  compacting,required TResult Function( String attemptId,  String message,  BigInt? retryAfterMs,  int attempt,  int maxAttempts)  reconnecting,required TResult Function( PlatformInt64? startedAtMs)  stopping,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  idle,required TResult Function( List<BridgeWorkGroupMember> items,  String? reasoningPreview,  PlatformInt64? startedAtMs)  working,required TResult Function( String attemptId,  String itemId,  String text,  PlatformInt64? startedAtMs)  streamingText,required TResult Function( bool manual,  PlatformInt64? startedAtMs)  compacting,required TResult Function( String attemptId,  String message,  BigInt? retryAfterMs,  int attempt,  int maxAttempts)  reconnecting,required TResult Function( PlatformInt64? startedAtMs)  stopping,}) {final _that = this;
 switch (_that) {
 case BridgeLiveStatusPhase_Idle():
 return idle();case BridgeLiveStatusPhase_Working():
@@ -1049,7 +1049,7 @@ return stopping(_that.startedAtMs);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  idle,TResult? Function( List<BridgeLiveWorkItem> items,  String? reasoningPreview,  PlatformInt64? startedAtMs)?  working,TResult? Function( String attemptId,  String itemId,  String text,  PlatformInt64? startedAtMs)?  streamingText,TResult? Function( bool manual,  PlatformInt64? startedAtMs)?  compacting,TResult? Function( String attemptId,  String message,  BigInt? retryAfterMs,  int attempt,  int maxAttempts)?  reconnecting,TResult? Function( PlatformInt64? startedAtMs)?  stopping,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  idle,TResult? Function( List<BridgeWorkGroupMember> items,  String? reasoningPreview,  PlatformInt64? startedAtMs)?  working,TResult? Function( String attemptId,  String itemId,  String text,  PlatformInt64? startedAtMs)?  streamingText,TResult? Function( bool manual,  PlatformInt64? startedAtMs)?  compacting,TResult? Function( String attemptId,  String message,  BigInt? retryAfterMs,  int attempt,  int maxAttempts)?  reconnecting,TResult? Function( PlatformInt64? startedAtMs)?  stopping,}) {final _that = this;
 switch (_that) {
 case BridgeLiveStatusPhase_Idle() when idle != null:
 return idle();case BridgeLiveStatusPhase_Working() when working != null:
@@ -1101,11 +1101,11 @@ String toString() {
 
 
 class BridgeLiveStatusPhase_Working extends BridgeLiveStatusPhase {
-  const BridgeLiveStatusPhase_Working({required  List<BridgeLiveWorkItem> items, this.reasoningPreview, this.startedAtMs}): _items = items,super._();
+  const BridgeLiveStatusPhase_Working({required  List<BridgeWorkGroupMember> items, this.reasoningPreview, this.startedAtMs}): _items = items,super._();
 
 
- final  List<BridgeLiveWorkItem> _items;
- List<BridgeLiveWorkItem> get items {
+ final  List<BridgeWorkGroupMember> _items;
+ List<BridgeWorkGroupMember> get items {
   if (_items is EqualUnmodifiableListView) return _items;
   // ignore: implicit_dynamic_type
   return EqualUnmodifiableListView(_items);
@@ -1146,7 +1146,7 @@ abstract mixin class $BridgeLiveStatusPhase_WorkingCopyWith<$Res> implements $Br
   factory $BridgeLiveStatusPhase_WorkingCopyWith(BridgeLiveStatusPhase_Working value, $Res Function(BridgeLiveStatusPhase_Working) _then) = _$BridgeLiveStatusPhase_WorkingCopyWithImpl;
 @useResult
 $Res call({
- List<BridgeLiveWorkItem> items, String? reasoningPreview, PlatformInt64? startedAtMs
+ List<BridgeWorkGroupMember> items, String? reasoningPreview, PlatformInt64? startedAtMs
 });
 
 
@@ -1166,7 +1166,7 @@ class _$BridgeLiveStatusPhase_WorkingCopyWithImpl<$Res>
 @pragma('vm:prefer-inline') $Res call({Object? items = null,Object? reasoningPreview = freezed,Object? startedAtMs = freezed,}) {
   return _then(BridgeLiveStatusPhase_Working(
 items: null == items ? _self._items : items // ignore: cast_nullable_to_non_nullable
-as List<BridgeLiveWorkItem>,reasoningPreview: freezed == reasoningPreview ? _self.reasoningPreview : reasoningPreview // ignore: cast_nullable_to_non_nullable
+as List<BridgeWorkGroupMember>,reasoningPreview: freezed == reasoningPreview ? _self.reasoningPreview : reasoningPreview // ignore: cast_nullable_to_non_nullable
 as String?,startedAtMs: freezed == startedAtMs ? _self.startedAtMs : startedAtMs // ignore: cast_nullable_to_non_nullable
 as PlatformInt64?,
   ));

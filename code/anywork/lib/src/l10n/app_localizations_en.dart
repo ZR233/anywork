@@ -8584,4 +8584,166 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get liveWorkKindTool => 'Tool';
+
+  @override
+  String get timelineToolNameReadAgentSession => 'Read agent session';
+
+  @override
+  String get timelineToolNameEvaluateAgent => 'Evaluate subagent';
+
+  @override
+  String get timelineToolNameListAgents => 'List subagents';
+
+  @override
+  String get timelineToolNameInterruptAgent => 'Interrupt subagent';
+
+  @override
+  String get timelineToolNameCloseAgent => 'Close subagent';
+
+  @override
+  String get timelineToolNameWaitAgent => 'Wait for subagent';
+
+  @override
+  String get timelineToolReadAgentSessionRunning => 'Reading session';
+
+  @override
+  String get timelineToolReadAgentSessionSucceeded => 'Read session';
+
+  @override
+  String get timelineToolReadAgentSessionFailed => 'Failed to read session';
+
+  @override
+  String get timelineToolEvaluateAgentRunning => 'Evaluating subagent';
+
+  @override
+  String get timelineToolEvaluateAgentSucceeded => 'Evaluated subagent';
+
+  @override
+  String get timelineToolEvaluateAgentFailed => 'Subagent evaluation failed';
+
+  @override
+  String get timelineToolListAgentsRunning => 'Listing subagents';
+
+  @override
+  String get timelineToolListAgentsSucceeded => 'Listed subagents';
+
+  @override
+  String get timelineToolListAgentsFailed => 'Failed to list subagents';
+
+  @override
+  String get timelineToolInterruptAgentRunning => 'Interrupting subagent';
+
+  @override
+  String get timelineToolInterruptAgentSucceeded => 'Interrupted subagent';
+
+  @override
+  String get timelineToolInterruptAgentFailed => 'Failed to interrupt subagent';
+
+  @override
+  String get timelineToolCloseAgentRunning => 'Closing subagent';
+
+  @override
+  String get timelineToolCloseAgentSucceeded => 'Closed subagent';
+
+  @override
+  String get timelineToolCloseAgentFailed => 'Failed to close subagent';
+
+  @override
+  String get timelineToolWaitAgentRunning => 'Waiting for subagent';
+
+  @override
+  String get timelineToolWaitAgentSucceeded => 'Received subagent report';
+
+  @override
+  String get timelineToolWaitAgentFailed => 'Failed to wait for subagent';
+
+  @override
+  String get timelineToolDetailTarget => 'Target';
+
+  @override
+  String get timelineToolDetailAgent => 'Agent';
+
+  @override
+  String get timelineToolDetailRole => 'Role';
+
+  @override
+  String get timelineToolDetailRating => 'Rating';
+
+  @override
+  String get timelineToolDetailComment => 'Comment';
+
+  @override
+  String get timelineToolDetailCursor => 'Cursor';
+
+  @override
+  String get timelineToolDetailCount => 'Count';
+
+  @override
+  String timelineToolBackgroundStarted(String name) {
+    return '$name moved to background';
+  }
+
+  @override
+  String timelineToolBackgrounded(String name) {
+    return '$name running in background';
+  }
+
+  @override
+  String timelineToolWaiting(String name) {
+    return '$name waiting';
+  }
+
+  @override
+  String get timelineToolStateBackgroundStarted => 'Moved to background';
+
+  @override
+  String get timelineToolStateBackgrounded => 'Backgrounded';
+
+  @override
+  String get timelineToolStateWaiting => 'Waiting';
+
+  @override
+  String get workGroupAgentRole => 'Role';
+
+  @override
+  String get workGroupAgentTask => 'Task';
+
+  @override
+  String get workGroupAgentStatus => 'Status';
+
+  @override
+  String workGroupAgentRunning(String name) {
+    return 'Subagent running · $name';
+  }
+
+  @override
+  String workGroupAgentCompleted(String name) {
+    return 'Subagent completed · $name';
+  }
+
+  @override
+  String workGroupAgentFailed(String name) {
+    return 'Subagent failed · $name';
+  }
+
+  @override
+  String workGroupAgentCancelled(String name) {
+    return 'Subagent cancelled · $name';
+  }
+
+  @override
+  String get workGroupFileChangeTitle => 'File change';
+
+  @override
+  String workGroupFileChanged(String path) {
+    return 'Changed file · $path';
+  }
+
+  @override
+  String get workGroupSkillTitle => 'Skill';
+
+  @override
+  String workGroupSkillActivated(String name) {
+    return 'Activated skill · $name';
+  }
 }

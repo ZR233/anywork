@@ -29,65 +29,36 @@ enum LiveAlertKind {
   error,
 }
 
-/// 实时工作容器内折叠的单个思考或工具条目的前端投影模型。
-@immutable
-final class LiveWorkMember {
-  const LiveWorkMember({
-    required this.id,
-    this.callId,
-    required this.kind,
-    required this.toolName,
-    required this.status,
-    required this.summary,
-    this.startedAtMs,
-    this.finishedAtMs,
-  });
+const _liveCommandTools = {
+  'exec',
+  'exec_command',
+  'shell',
+  'write_stdin',
+  'bash',
+};
 
-  final String id;
-  final String? callId;
-  final String kind;
-  final String toolName;
-  final String status;
-  final String summary;
-  final int? startedAtMs;
-  final int? finishedAtMs;
+const _liveActiveToolStatuses = {
+  'running',
+  'streaming',
+  'approved',
+  'started',
+  'queued',
+  'cancelling',
+  'awaitingApproval',
+  'waitingApproval',
+  'waiting',
+};
 
-  bool get isActive =>
-      status == 'running' ||
-      status == 'cancelling' ||
-      status == 'awaitingApproval';
+bool isLiveToolActive(String status) =>
+    _liveActiveToolStatuses.contains(status);
 
-  bool get isFailed => status == 'failed' || status == 'denied';
-
-  bool get isCancelled => status == 'cancelled';
-
-  bool get isCompleted => status == 'completed' || status == 'backgrounded';
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is LiveWorkMember &&
-          id == other.id &&
-          callId == other.callId &&
-          kind == other.kind &&
-          toolName == other.toolName &&
-          status == other.status &&
-          summary == other.summary &&
-          startedAtMs == other.startedAtMs &&
-          finishedAtMs == other.finishedAtMs;
-
-  @override
-  int get hashCode => Object.hash(
-    id,
-    callId,
-    kind,
-    toolName,
-    status,
-    summary,
-    startedAtMs,
-    finishedAtMs,
-  );
-}
+bool isLiveWorkMemberActive(WorkGroupMember member) => switch (member) {
+  WorkGroupReasoning(:final outcome) => outcome == 'running',
+  WorkGroupToolCall(:final status) => isLiveToolActive(status),
+  WorkGroupAgent(:final status) =>
+    status == 'running' || status == 'queued' || status == 'active',
+  WorkGroupFileChange() || WorkGroupSkill() || WorkGroupFallback() => false,
+};
 
 /// 实时状态栏前端展示层的单一扁平状态机（8 个互斥态）。
 @immutable
@@ -114,18 +85,19 @@ final class LiveStatusHidden extends LiveStatusState {
 final class LiveStatusWorkingState extends LiveStatusState {
   LiveStatusWorkingState({
     required this.threadId,
-    required List<LiveWorkMember> items,
+    required List<WorkGroupMember> items,
     this.reasoningPreview,
     this.startedAtMs,
   }) : items = List.unmodifiable(items);
 
   final String threadId;
-  final List<LiveWorkMember> items;
+  final List<WorkGroupMember> items;
   final String? reasoningPreview;
   final int? startedAtMs;
 
-  bool get hasRunningCommand =>
-      items.any((item) => item.kind == 'command' && item.isActive);
+  bool get hasRunningCommand => items.whereType<WorkGroupToolCall>().any(
+    (t) => _liveCommandTools.contains(t.toolName) && isLiveToolActive(t.status),
+  );
 
   @override
   bool operator ==(Object other) =>

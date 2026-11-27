@@ -3,6 +3,7 @@
 pub mod conversation_feed;
 pub mod decoder;
 pub mod live_status_layer;
+pub mod member_decoder;
 pub mod meta_bus;
 pub mod models;
 mod session_detail;
@@ -16,7 +17,10 @@ pub use decoder::{
     boundary_item_id, decode_boundary_item, fold_work_group_members, summarize_work_group,
     work_group_item_id,
 };
-pub use live_status_layer::{LiveStatusDataLayer, STREAMING_TEXT_COALESCE_INTERVAL};
+pub use live_status_layer::{
+    LiveStatusDataLayer, STREAMING_TEXT_COALESCE_INTERVAL, latest_reasoning_summary_preview,
+};
+pub use member_decoder::{decode_work_group_member, merge_work_group_member};
 pub use meta_bus::{BusEventSink, MetaEventBus, ThreadMetaEvent};
 pub use models::*;
 pub use session_detail::{SessionDetailKind, SessionDetailWindow};

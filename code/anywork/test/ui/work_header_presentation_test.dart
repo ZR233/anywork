@@ -320,4 +320,29 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
+
+  testWidgets(
+    'TimelineReasoningView normalizes **** and avoids duplicate tooltip',
+    (tester) async {
+      await tester.pumpWidget(
+        _host(
+          const TimelineReasoningView(
+            summary: '**First****Second**',
+            startedAt: 100,
+            finishedAt: 103,
+          ),
+        ),
+      );
+
+      final row = tester.widget<TimelineActivityRow>(
+        find.byType(TimelineActivityRow),
+      );
+      expect(row.label, 'First Second');
+      expect(row.tooltip, isNull);
+      expect(find.text('用时 3 秒'), findsOneWidget);
+      final tooltip = tester.widget<Tooltip>(find.byType(Tooltip));
+      expect(tooltip.message, 'First Second\n用时 3 秒');
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 }

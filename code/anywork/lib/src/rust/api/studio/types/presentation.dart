@@ -14,7 +14,7 @@ import 'thread_stream.dart';
 import 'thread_stream/item.dart';
 part 'presentation.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class BridgeBodyRef {
   final String databaseId;
@@ -230,7 +230,7 @@ sealed class BridgeLiveStatusPhase with _$BridgeLiveStatusPhase {
 
   const factory BridgeLiveStatusPhase.idle() = BridgeLiveStatusPhase_Idle;
   const factory BridgeLiveStatusPhase.working({
-    required List<BridgeLiveWorkItem> items,
+    required List<BridgeWorkGroupMember> items,
     String? reasoningPreview,
     PlatformInt64? startedAtMs,
   }) = BridgeLiveStatusPhase_Working;
@@ -284,53 +284,6 @@ class BridgeLiveStatusSnapshot {
           phase == other.phase &&
           attentions == other.attentions &&
           suppressedByInteraction == other.suppressedByInteraction;
-}
-
-class BridgeLiveWorkItem {
-  final String id;
-  final String? callId;
-  final String kind;
-  final String toolName;
-  final String status;
-  final String summary;
-  final PlatformInt64? startedAtMs;
-  final PlatformInt64? finishedAtMs;
-
-  const BridgeLiveWorkItem({
-    required this.id,
-    this.callId,
-    required this.kind,
-    required this.toolName,
-    required this.status,
-    required this.summary,
-    this.startedAtMs,
-    this.finishedAtMs,
-  });
-
-  @override
-  int get hashCode =>
-      id.hashCode ^
-      callId.hashCode ^
-      kind.hashCode ^
-      toolName.hashCode ^
-      status.hashCode ^
-      summary.hashCode ^
-      startedAtMs.hashCode ^
-      finishedAtMs.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeLiveWorkItem &&
-          runtimeType == other.runtimeType &&
-          id == other.id &&
-          callId == other.callId &&
-          kind == other.kind &&
-          toolName == other.toolName &&
-          status == other.status &&
-          summary == other.summary &&
-          startedAtMs == other.startedAtMs &&
-          finishedAtMs == other.finishedAtMs;
 }
 
 class BridgeModelRecoveryNotice {

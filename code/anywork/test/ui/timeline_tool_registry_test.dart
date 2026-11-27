@@ -611,6 +611,12 @@ void main() {
       'builtin.move_path@1',
       'builtin.spawn_agent@1',
       'builtin.send_message@1',
+      'builtin.read_agent_session@1',
+      'builtin.evaluate_agent@1',
+      'builtin.list_agents@1',
+      'builtin.interrupt_agent@1',
+      'builtin.close_agent@1',
+      'builtin.wait_agent@1',
       'builtin.wait@1',
       'builtin.sleep@1',
       'builtin.view_image@1',
@@ -635,7 +641,7 @@ void main() {
       'builtin.deepseek_web_fetch@1',
     };
     expect(timelineToolItemRegistry.exactContracts, expectedContracts);
-    expect(timelineToolItemRegistry.adapters, hasLength(39));
+    expect(timelineToolItemRegistry.adapters, hasLength(45));
 
     final nonFallbackAdapters = timelineToolItemRegistry.adapters
         .where((adapter) => adapter.id != 'generic@1')
@@ -704,6 +710,12 @@ void main() {
         ('builtin.read_session_note@1', '读取会话笔记', 'Read session note'),
         ('builtin.search_session_note@1', '搜索会话笔记', 'Search session note'),
         ('builtin.send_message@1', '发送消息', 'Send message'),
+        ('builtin.read_agent_session@1', '读取智能体会话', 'Read agent session'),
+        ('builtin.evaluate_agent@1', '评估子智能体', 'Evaluate subagent'),
+        ('builtin.list_agents@1', '列出子智能体', 'List subagents'),
+        ('builtin.interrupt_agent@1', '中断子智能体', 'Interrupt subagent'),
+        ('builtin.close_agent@1', '关闭子智能体', 'Close subagent'),
+        ('builtin.wait_agent@1', '等待子智能体', 'Wait for subagent'),
         ('builtin.show_files@1', '展示文件', 'Show files'),
         ('builtin.sleep@1', '等待计时', 'Wait for timer'),
         ('builtin.spawn_agent@1', '派发协作任务', 'Delegate task'),
@@ -1537,4 +1549,294 @@ void main() {
       returnsNormally,
     );
   });
+
+  testWidgets(
+    'new collaboration adapters match contracts and uncontracted names without exposing raw thread hashes',
+    (tester) async {
+      for (final (toolName, contract, icon) in [
+        (
+          'read_agent_session',
+          'builtin.read_agent_session@1',
+          Icons.forum_outlined,
+        ),
+        (
+          'evaluate_agent',
+          'builtin.evaluate_agent@1',
+          Icons.fact_check_outlined,
+        ),
+        ('list_agents', 'builtin.list_agents@1', Icons.groups_outlined),
+        (
+          'interrupt_agent',
+          'builtin.interrupt_agent@1',
+          Icons.pause_circle_outline,
+        ),
+        ('close_agent', 'builtin.close_agent@1', Icons.stop_circle_outlined),
+        ('wait_agent', 'builtin.wait_agent@1', Icons.hourglass_bottom_outlined),
+      ]) {
+        expect(
+          timelineToolItemRegistry
+              .resolve(
+                TimelineToolMatchContext(
+                  toolName: toolName,
+                  presentationContract: '',
+                ),
+              )
+              .id,
+          contract,
+        );
+        expect(
+          timelineToolItemRegistry
+              .resolve(
+                TimelineToolMatchContext(
+                  toolName: toolName,
+                  presentationContract: 'builtin.$toolName@99',
+                ),
+              )
+              .id,
+          'generic@1',
+        );
+
+        await tester.pumpWidget(
+          _host(
+            TimelineToolItemView(
+              item: _tool(
+                contract,
+                '{"target":"thread-66137cebcce11-a"}',
+                '{}',
+                name: toolName,
+              ),
+            ),
+          ),
+        );
+        await tester.pump();
+        expect(_row(tester).icon, icon, reason: contract);
+        expect(
+          _row(tester).label,
+          isNot(contains('thread-66137cebcce11-a')),
+          reason: contract,
+        );
+      }
+
+      // read_agent_session prioritizes readable names, keeps full fields in expanded details
+      await tester.pumpWidget(
+        _host(
+          TimelineToolItemView(
+            key: const ValueKey('read-agent-session-expanded'),
+            initiallyExpanded: true,
+            item: _tool(
+              'builtin.read_agent_session@1',
+              '{"target":"thread-66137cebcce11-a","agentName":"调研员","cursor":"cur-2","limit":15}',
+              jsonEncode({
+                'items': [
+                  {
+                    'payloadJson': jsonEncode({
+                      'data': {'summary': '已完成日志核对'},
+                      'bodies': [
+                        {'inlineText': '共检查 4 个文件'},
+                      ],
+                    }),
+                  },
+                ],
+                'nextCursor': 'cur-3',
+              }),
+              name: 'read_agent_session',
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(_row(tester).label, '已读取会话 调研员');
+      final expandedRead = _visible(tester);
+      expect(expandedRead, contains('thread-66137cebcce11-a'));
+      expect(expandedRead, contains('cur-2'));
+      expect(expandedRead, contains('15'));
+      expect(expandedRead, contains('已完成日志核对'));
+      expect(expandedRead, contains('共检查 4 个文件'));
+
+      // list_agents extracts count from array output
+      await tester.pumpWidget(
+        _host(
+          TimelineToolItemView(
+            key: const ValueKey('list-agents-count'),
+            item: _tool(
+              'builtin.list_agents@1',
+              '{}',
+              jsonEncode([
+                {'id': 'a1', 'role': 'researcher', 'status': 'running'},
+                {'id': 'a2', 'role': 'verifier', 'status': 'idle'},
+              ]),
+              name: 'list_agents',
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(_row(tester).label, '已列出子智能体 (2)');
+
+      // evaluate_agent displays readable target + comment excerpt on primary row
+      await tester.pumpWidget(
+        _host(
+          TimelineToolItemView(
+            key: const ValueKey('evaluate-agent-expanded'),
+            initiallyExpanded: true,
+            item: _tool(
+              'builtin.evaluate_agent@1',
+              jsonEncode({
+                'target': 'thread-66137cebcce11-a',
+                'role': 'rust-worker',
+                'outcome': 'passed',
+                'quality': 5,
+                'instructionFollowing': 5,
+                'comment': '全部契约与单测通过',
+              }),
+              '{}',
+              name: 'evaluate_agent',
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(_row(tester).label, '已评估子智能体 rust-worker · 全部契约与单测通过');
+      expect(_visible(tester), contains('5/5 · 5/5'));
+    },
+  );
+
+  testWidgets(
+    'command background states, failure exit code meta, send_message summary, spawn_agent pending state and live clock',
+    (tester) async {
+      final created = DateTime(2026, 1, 1, 10, 0, 0);
+      final completed = created.add(const Duration(seconds: 1));
+
+      // backgroundStarted / backgrounded are neither active spinners nor completed
+      for (final (status, expectedVerb) in [
+        ('backgroundStarted', '已转入后台'),
+        ('backgrounded', '后台运行'),
+      ]) {
+        await tester.pumpWidget(
+          _host(
+            TimelineToolItemView(
+              item: TimelineToolPresentation(
+                id: 'exec-$status',
+                toolCallId: 'c-$status',
+                name: 'exec_command',
+                presentationContract: '',
+                statusString: status,
+                arguments: '{"command":"cargo watch"}',
+                output: '',
+              ),
+            ),
+          ),
+        );
+        await tester.pump();
+        final row = _row(tester);
+        expect(row.icon, Icons.terminal);
+        expect(row.active, isFalse);
+        expect(row.isIssue, isFalse);
+        expect(row.label, '$expectedVerb cargo watch');
+        expect(row.label, isNot(contains('已运行')));
+        expect(row.label, isNot(contains('已完成')));
+      }
+
+      // Failed exec retains command in primary label and shows exit code + elapsed in meta
+      await tester.pumpWidget(
+        _host(
+          TimelineToolItemView(
+            item: TimelineToolPresentation(
+              id: 'exec-fail-meta',
+              toolCallId: 'c-fail',
+              name: 'exec',
+              presentationContract: 'builtin.exec@2',
+              statusString: 'failed',
+              arguments: '{"command":"cargo test -p pl-core"}',
+              output: '{"stderr":{"content":"boom"},"exitCode":2}',
+              exitCode: 2,
+              createdAt: created,
+              completedAt: completed,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(_row(tester).label, '运行失败 cargo test -p pl-core');
+      expect(_row(tester).label, isNot(contains('boom')));
+      expect(_row(tester).isIssue, isTrue);
+      expect(_row(tester).meta, '退出码 2 · 用时 1 秒');
+
+      // send_message shows recipient + message excerpt without raw thread hash
+      await tester.pumpWidget(
+        _host(
+          TimelineToolItemView(
+            item: _tool(
+              'builtin.send_message@1',
+              '{"target":"thread-66137d7bee82c-14","role":"reviewer","message":"请复核第 3 阶段变更"}',
+              '{}',
+              name: 'send_message',
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(_row(tester).label, '已发送消息 reviewer · 请复核第 3 阶段变更');
+      expect(_row(tester).label, isNot(contains('thread-66137d7bee82c-14')));
+
+      // spawn_agent running or completed without inline result does not stick on pending confirmation
+      await tester.pumpWidget(
+        _host(
+          TimelineToolItemView(
+            item: _tool(
+              'builtin.spawn_agent@1',
+              '{"profileId":"directory-executor"}',
+              '',
+              status: 'succeeded',
+              name: 'spawn_agent',
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(_row(tester).label, '已启动子智能体 directory-executor');
+      expect(_row(tester).label, isNot(contains('结果待确认')));
+
+      // spawn_agent with explicit rejection still shows rejection label
+      await tester.pumpWidget(
+        _host(
+          TimelineToolItemView(
+            item: _tool(
+              'builtin.spawn_agent@1',
+              '{"profileId":"directory-executor","taskSummary":"修复工具显示"}',
+              '{"messageAccepted":false}',
+              status: 'succeeded',
+              name: 'spawn_agent',
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(_row(tester).label, '初始任务输入未接纳 修复工具显示');
+      expect(_row(tester).isIssue, isTrue);
+
+      // TimelineToolItemView with injected now shows live elapsed meta on active workgroup item
+      await tester.pumpWidget(
+        _host(
+          TimelineToolItemView(
+            workGroupMember: true,
+            now: () => created.add(const Duration(seconds: 9)),
+            item: TimelineToolPresentation(
+              id: 'live-clock-wait-agent',
+              toolCallId: 'c-live',
+              name: 'wait_agent',
+              presentationContract: 'builtin.wait_agent@1',
+              statusString: 'running',
+              arguments: '{"target":"worker-1"}',
+              output: '',
+              createdAt: created,
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(_row(tester).label, '正在等待子智能体 worker-1');
+      expect(_row(tester).meta, '用时 9 秒');
+    },
+  );
 }

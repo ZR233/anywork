@@ -27,6 +27,7 @@ abstract class StructuredTimelineToolAdapter extends TimelineToolItemAdapter {
   bool get fileTarget => false;
 
   /// Whether completed items show `elapsed` metadata (reserved for `exec`).
+  @override
   bool get showsElapsedDuration => false;
 
   /// Optional driver/test card wrapper key.

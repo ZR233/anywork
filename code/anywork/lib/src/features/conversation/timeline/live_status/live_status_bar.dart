@@ -6,9 +6,10 @@ import 'live_status_view_model.dart';
 
 /// 底部实时状态栏薄连接层：直接将 [LiveStatusViewModel] 投影出的状态传入纯视图组件。
 class LiveStatusBar extends ConsumerWidget {
-  const LiveStatusBar({required this.threadId, super.key});
+  const LiveStatusBar({required this.threadId, this.bodyBuilder, super.key});
 
   final String threadId;
+  final Widget Function(String id, String text)? bodyBuilder;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -17,6 +18,7 @@ class LiveStatusBar extends ConsumerWidget {
     return LiveStatusSurfaceView(
       viewportKey: ValueKey(threadId),
       state: view.state,
+      bodyBuilder: bodyBuilder,
     );
   }
 }

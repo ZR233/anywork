@@ -4147,5 +4147,116 @@
   "liveWorkKindExec": "Run",
   "liveWorkKindWait": "Wait",
   "liveWorkKindAgent": "Agent",
-  "liveWorkKindTool": "Tool"
+  "liveWorkKindTool": "Tool",
+  "timelineToolNameReadAgentSession": "Read agent session",
+  "timelineToolNameEvaluateAgent": "Evaluate subagent",
+  "timelineToolNameListAgents": "List subagents",
+  "timelineToolNameInterruptAgent": "Interrupt subagent",
+  "timelineToolNameCloseAgent": "Close subagent",
+  "timelineToolNameWaitAgent": "Wait for subagent",
+  "timelineToolReadAgentSessionRunning": "Reading session",
+  "timelineToolReadAgentSessionSucceeded": "Read session",
+  "timelineToolReadAgentSessionFailed": "Failed to read session",
+  "timelineToolEvaluateAgentRunning": "Evaluating subagent",
+  "timelineToolEvaluateAgentSucceeded": "Evaluated subagent",
+  "timelineToolEvaluateAgentFailed": "Subagent evaluation failed",
+  "timelineToolListAgentsRunning": "Listing subagents",
+  "timelineToolListAgentsSucceeded": "Listed subagents",
+  "timelineToolListAgentsFailed": "Failed to list subagents",
+  "timelineToolInterruptAgentRunning": "Interrupting subagent",
+  "timelineToolInterruptAgentSucceeded": "Interrupted subagent",
+  "timelineToolInterruptAgentFailed": "Failed to interrupt subagent",
+  "timelineToolCloseAgentRunning": "Closing subagent",
+  "timelineToolCloseAgentSucceeded": "Closed subagent",
+  "timelineToolCloseAgentFailed": "Failed to close subagent",
+  "timelineToolWaitAgentRunning": "Waiting for subagent",
+  "timelineToolWaitAgentSucceeded": "Received subagent report",
+  "timelineToolWaitAgentFailed": "Failed to wait for subagent",
+  "timelineToolDetailTarget": "Target",
+  "timelineToolDetailAgent": "Agent",
+  "timelineToolDetailRole": "Role",
+  "timelineToolDetailRating": "Rating",
+  "timelineToolDetailComment": "Comment",
+  "timelineToolDetailCursor": "Cursor",
+  "timelineToolDetailCount": "Count",
+  "timelineToolBackgroundStarted": "{name} moved to background",
+  "@timelineToolBackgroundStarted": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "timelineToolBackgrounded": "{name} running in background",
+  "@timelineToolBackgrounded": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "timelineToolWaiting": "{name} waiting",
+  "@timelineToolWaiting": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "timelineToolStateBackgroundStarted": "Moved to background",
+  "timelineToolStateBackgrounded": "Backgrounded",
+  "timelineToolStateWaiting": "Waiting",
+  "workGroupAgentRole": "Role",
+  "workGroupAgentTask": "Task",
+  "workGroupAgentStatus": "Status",
+  "workGroupAgentRunning": "Subagent running · {name}",
+  "@workGroupAgentRunning": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "workGroupAgentCompleted": "Subagent completed · {name}",
+  "@workGroupAgentCompleted": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "workGroupAgentFailed": "Subagent failed · {name}",
+  "@workGroupAgentFailed": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "workGroupAgentCancelled": "Subagent cancelled · {name}",
+  "@workGroupAgentCancelled": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "workGroupFileChangeTitle": "File change",
+  "workGroupFileChanged": "Changed file · {path}",
+  "@workGroupFileChanged": {
+    "placeholders": {
+      "path": {
+        "type": "String"
+      }
+    }
+  },
+  "workGroupSkillTitle": "Skill",
+  "workGroupSkillActivated": "Activated skill · {name}",
+  "@workGroupSkillActivated": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  }
 }

@@ -16,8 +16,10 @@ const Set<String> timelineToolRunningStatuses = {
 const Set<String> timelineToolActiveStatuses = {
   'queued',
   ...timelineToolRunningStatuses,
+  'waiting',
   'cancelling',
   'awaitingApproval',
+  'waitingApproval',
 };
 
 /// Real failures, denials, and budget limits: icon becomes error_outline while
@@ -42,10 +44,14 @@ String? toolLifecycleVerb(
   required String running,
   required String failed,
   required String succeeded,
+  String? backgroundStarted,
+  String? backgrounded,
 }) => switch (status) {
   final status when timelineToolRunningStatuses.contains(status) => running,
   'failed' => failed,
-  'succeeded' => succeeded,
+  'succeeded' || 'completed' => succeeded,
+  'backgroundStarted' => backgroundStarted,
+  'backgrounded' => backgrounded,
   _ => null,
 };
 
@@ -53,13 +59,17 @@ String toolStatusTitle(AppLocalizations l10n, String status, String name) {
   final label = name.trim().isEmpty ? l10n.timelineToolFallback : name;
   return switch (status) {
     'queued' => l10n.timelineToolQueued(label),
+    'waiting' => l10n.timelineToolWaiting(label),
     'cancelling' => l10n.timelineToolCancelling(label),
     'interrupted' => l10n.timelineToolInterrupted(label),
-    'succeeded' => l10n.timelineToolCompleted(label),
+    'succeeded' || 'completed' => l10n.timelineToolCompleted(label),
     'failed' => l10n.timelineToolFailed(label),
     'denied' => l10n.timelineToolDenied(label),
     'cancelled' => l10n.timelineToolCancelled(label),
-    'awaitingApproval' => l10n.timelineToolAwaitingApproval(label),
+    'awaitingApproval' ||
+    'waitingApproval' => l10n.timelineToolAwaitingApproval(label),
+    'backgroundStarted' => l10n.timelineToolBackgroundStarted(label),
+    'backgrounded' => l10n.timelineToolBackgrounded(label),
     'running' ||
     'streaming' ||
     'approved' ||

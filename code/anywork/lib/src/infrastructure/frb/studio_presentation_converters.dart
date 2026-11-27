@@ -367,7 +367,7 @@ LiveStatusSnapshot _liveStatusFromFrb(
     frb_presentation.BridgeLiveStatusPhase_Idle() => const LiveStatusIdle(),
     final frb_presentation.BridgeLiveStatusPhase_Working phase =>
       LiveStatusWorking(
-        items: phase.items.map(_liveWorkItemFromFrb),
+        items: phase.items.map(_workGroupMemberFromFrb),
         reasoningPreview: phase.reasoningPreview,
         startedAtMs: _timelineMillisFromFrb(phase.startedAtMs),
       ),
@@ -409,18 +409,6 @@ LiveStatusSnapshot _liveStatusFromFrb(
   ),
   suppressedByInteraction: value.suppressedByInteraction,
 );
-
-LiveWorkItem _liveWorkItemFromFrb(frb_presentation.BridgeLiveWorkItem value) =>
-    LiveWorkItem(
-      id: value.id,
-      callId: value.callId,
-      kind: value.kind,
-      toolName: value.toolName,
-      status: value.status,
-      summary: value.summary,
-      startedAtMs: _timelineMillisFromFrb(value.startedAtMs),
-      finishedAtMs: _timelineMillisFromFrb(value.finishedAtMs),
-    );
 
 ConversationFeedEvent _conversationEventFromFrb(
   frb_presentation.BridgeConversationEvent value,

@@ -76,7 +76,7 @@ flowchart TD
 `LiveStatusDataLayer` 直接复用持久化层的 `timeline_role`（`Hidden` / `Work` / `Boundary`）与实时流事件，以六个互斥相位（`Idle`、`Working`、`StreamingText`、`Compacting`、`Reconnecting`、`Stopping`）驱动实时状态栏，并通过天然展示分割替代复杂的分段维护：
 
 1. **执行启动即入思考态**：一旦收到 `RunActivity` 进入执行、`TurnStarted` 或 `InputAccepted`，立即切入 `Working`（思考中，工作容器为空且不显示展开箭头），等待首个模型或工具响应。
-2. **复用 `Work` 角色累加工作项**：持久化层 `timeline_role = 1`（`Work`：工具生命周期、推理终态、子智能体起止）与实时 `ReasoningDelta` / `ToolProgress` 进入当前 `Working` 容器，成员按调用/实体身份追踪各自 `status` 与起止时间。后到的完成或进度事件按身份原地更新（保留初次开始时间；`is_summary` 思考摘要优先于原始正文片段，已有有效进展摘要不被终态参数回退覆盖）；未匹配到前序开始的终态事件直接追加为已完成；处于 `Idle` 非执行态的迟到终态事件不重开 `Working`（防止状态栏误弹）。
+2. **复用 `Work` 角色与统一 `WorkGroupMember` 累加工作项**：持久化层 `timeline_role = 1`（`Work`：工具生命周期、推理终态、子智能体起止、文件变更与技能激活）与实时 `ReasoningDelta` / `ToolProgress` 进入当前 `Working` 容器。`LiveStatusPhase::Working.items` 直接复用与历史工作组同一套强类型 `WorkGroupMember`（`Reasoning`、`ToolCall`、`Agent`、`FileChange`、`Skill`、`Fallback`，已移除旧 `LiveWorkItem`/`LiveWorkMember`），经共享 `member_decoder` 解码并按调用/实体身份原位更新（保留初次开始时间；`is_summary` 思考摘要优先于原始正文片段，已有有效进展摘要不被终态参数回退覆盖）；`latest_reasoning_summary_preview` 仅提取最新非空单行及其最新强调片段，超长时从右端安全截断并在需要时补全闭合 `**`，避免 `****` 乱码或左端截断破坏 Markdown 语法；未匹配到前序开始的终态事件直接追加为已完成；处于 `Idle` 非执行态的迟到终态事件不重开 `Working`（防止状态栏误弹）。
 3. **展示类／边界事件天然切分工作组**：任意展示类信号（`TextStreamStarted` / `TextStreamDelta`、`CompactionStarted`、`ModelRecovery`、`RunActivity(Stopping)`）或持久化 `timeline_role = 2`（`Boundary`）到达时，立即切换对应相位并清空前序 `Working` 容器，无需等待在途工具全部收齐终态；待文本流、压缩或重连恢复后且当前 Turn 仍活跃，自动开启一个全新空白 `Working` 容器。
 4. **`Stopping` 锁存与归零**：执行阶段进入停止中即切入 `Stopping` 并锁存，屏蔽迟到的推理/工具/文本增量，直到执行彻底结束（`RunActivity(None)`、`TurnEnded`、`RunEnded` 或 `TurnReceiptRecorded`）归位 `Idle`。
 
@@ -116,7 +116,7 @@ stateDiagram-v2
     Stopping --> Idle : RunActivity(None) / TurnEnded / RunEnded / TurnReceiptRecorded
 ```
 
-Flutter 侧只依据上述快照配合当前交互与存储状态投影为一个扁平互斥展示态：工作组折叠内容直接呈现在实时容器导轨内（单行紧凑条目，无二级描述），`StreamingText` 按 `itemId` 复用同一个有界响应窗口随增量刷新，停止、审批、存储或断连由独立单态承接而不堆叠多行。
+Flutter 侧只依据上述快照配合当前交互与存储状态投影为一个扁平互斥展示态：`LiveStatusSurfaceView` 与主时间线 `CompletionRunConnector` 共用 `timeline/work_group/` 下的 `WorkGroupMemberView` 渲染实时与历史工作组成员（由 `WorkGroupMemberRegistry` 与 `WorkGroupMemberAdapter` 为每种成员类型提供独立适配器），工作组折叠内容直接呈现在实时容器导轨内（单行紧凑条目，无二级描述，无冗余 `思考 · ` 前缀，完成态保留类别图标、失败仅图标变红而不覆写命令、子智能体与协作工具不裸露 `thread-...`，并支持实时组内按需展开查看详情），`StreamingText` 按 `itemId` 复用同一个有界响应窗口随增量刷新，停止、审批、存储或断连由独立单态承接而不堆叠多行。
 
 ### 26.3.2 主时间线天然封组状态机（`TimelineDataLayer`）
 
@@ -189,4 +189,4 @@ Flutter 侧 `TimelineSessionOwner` 与 `TimelineMessageController` 仅维持一�
 - `TimelineView` 缓存稳定的 `Builders` 实例，**禁止在 item 外层包装随消息实例变化的 `ObjectKey(message)`**，所有呈现值保持不可变值相等；
 - 直接使用 `ChatAnimatedList(reversed: true, ...)`（ACP 会话继续沿用其既有 Flyer Chat 反向列表与内容投影）；用户上滑进入历史浏览模式时暂停应用新到的 `Append`，将其暂存在有界缓冲队列（上限 64 条）并点亮“回到最新”提示；回到底缘时若未溢出直接增量 `insertAllMessages` 补齐，溢出才调用 `reset_to_latest`；
 - 时间线滚动条沿用 Flyer Chat 列表从 Flutter 滚动配置获得的桌面滚动条。用户滚动时显示滑块，停止后自动淡出，使用同一个列表滚动控制器。
-- 保留全部内置工具适配器（`timeline/tools/items/` 独立实现 + `tool_item_registry.dart` 集中索引，未知工具回退 `generic@1`，`wait` 与 `sleep` 共用适配器管线）、单条未知/损坏 `payload_json` 原地降级回退、待确认 Plan 摘要卡、交互表单/回执、发送临时回显结算（按 `input_id` 消费 `InputPresented`）、子智能体只读底栏、以及底部 `LiveStatusBar`（直连 `LiveStatusSnapshot`，包括模型重试断连倒计时，零触碰主时间线）。
+- 保留全部内置工具适配器（`timeline/tools/items/` 独立实现 + `tool_item_registry.dart` 集中索引，含 `collaboration/` 下全部子智能体协作工具适配器，未知工具回退 `generic@1`，`wait` 与 `sleep` 共用适配器管线）、工作组成员统一注册分派（`timeline/work_group/` 独立实现 + `WorkGroupMemberRegistry` + `WorkGroupMemberView`，供实时状态栏与历史已封存工作组共用）、单条未知/损坏 `payload_json` 原地降级回退、待确认 Plan 摘要卡、交互表单/回执、发送临时回显结算（按 `input_id` 消费 `InputPresented`）、子智能体只读底栏、以及底部 `LiveStatusBar`（直连 `LiveStatusSnapshot`，包括模型重试断连倒计时，零触碰主时间线）。
