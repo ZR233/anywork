@@ -931,7 +931,7 @@ void main() {
           arguments: '{"command":"failing program"}',
           output: '[exit 7]',
           toolData: const ToolDataArtifactPresent({
-            'stderr': {'content': 'original stderr'},
+            'stderr': 'original stderr',
             'exitCode': 7,
             'diagnostic': {'detail': 'original diagnostic'},
           }),
@@ -1348,16 +1348,21 @@ void main() {
       adapter.decodeInput(_zh, '{"command":3}').single,
       isA<ToolDetailUnavailable>(),
     );
-    expect(
-      adapter
-          .decodeOutputData(
-            _zh,
-            'result text',
-            const ToolDataArtifactPresent({'stdout': 42}),
-          )
-          .single,
-      isA<ToolDetailUnavailable>(),
-    );
+    for (final invalidStream in <Object>[
+      42,
+      {'content': 'obsolete stream wrapper'},
+    ]) {
+      expect(
+        adapter
+            .decodeOutputData(
+              _zh,
+              'result text',
+              ToolDataArtifactPresent({'stdout': invalidStream}),
+            )
+            .single,
+        isA<ToolDetailUnavailable>(),
+      );
+    }
     expect(
       timelineToolItemRegistry
           .lookupExact('generic@1')!
@@ -1373,8 +1378,8 @@ void main() {
           _zh,
           'authored result text',
           ToolDataArtifactPresent({
-            'stdout': {'content': 'out'},
-            'stderr': {'content': 'err'},
+            'stdout': 'out',
+            'stderr': 'err',
             'exitCode': 7,
             'signal': 9,
             'taskId': 'private',
@@ -1553,8 +1558,8 @@ void main() {
               '{"command":"printf proof\\nprintf second","cwd":"hidden"}',
               'program output',
               toolData: const ToolDataArtifactPresent({
-                'stdout': {'content': 'program output'},
-                'stderr': {'content': ''},
+                'stdout': 'program output',
+                'stderr': '',
                 'exitCode': 0,
                 'taskId': 'hidden',
               }),
@@ -1868,7 +1873,7 @@ void main() {
               arguments: '{"command":"cargo test"}',
               output: 'ok',
               toolData: const ToolDataArtifactPresent({
-                'stdout': {'content': 'ok'},
+                'stdout': 'ok',
                 'exitCode': 0,
               }),
               createdAt: created,
@@ -1891,9 +1896,7 @@ void main() {
               statusString: 'succeeded',
               arguments: '{"chars":"continue"}',
               output: 'resumed',
-              toolData: const ToolDataArtifactPresent({
-                'stdout': {'content': 'resumed'},
-              }),
+              toolData: const ToolDataArtifactPresent({'stdout': 'resumed'}),
               createdAt: created,
               completedAt: completed,
             ),

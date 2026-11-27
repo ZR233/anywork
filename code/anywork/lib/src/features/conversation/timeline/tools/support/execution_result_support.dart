@@ -4,7 +4,6 @@ import 'tool_detail_values.dart';
 String? _stream(AppLocalizations l10n, Object? value) => switch (value) {
   null => null,
   final String text => text,
-  {'content': final String text} => text,
   _ => throw FormatException(l10n.timelineToolStreamMalformed),
 };
 

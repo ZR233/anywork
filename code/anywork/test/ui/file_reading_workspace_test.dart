@@ -103,26 +103,21 @@ class _AttachmentTransport extends RecordingDemoTransport {
 
   static final String _artifactsJson = jsonEncode([
     {
-      'kind': 'opaque',
-      'payload': {
-        'format': 'pl.tool.files',
-        'version': 1,
-        'content': jsonEncode({
-          'files': [
-            {
-              'status': 'ready',
-              'filename': 'notes.md',
-              'modality': 'file',
-              'resource': {
-                'id': 'notes',
-                'contentDigest': 'sha256:${'0' * 64}',
-                'byteLen': 8,
-                'mediaType': 'text/markdown',
-              },
-              'origin': {'kind': 'archive'},
+      'fileDisplay': {
+        'files': [
+          {
+            'status': 'ready',
+            'filename': 'notes.md',
+            'modality': 'file',
+            'resource': {
+              'id': 'notes',
+              'contentDigest': 'sha256:${'0' * 64}',
+              'byteLen': 8,
+              'mediaType': 'text/markdown',
             },
-          ],
-        }),
+            'origin': {'kind': 'archive'},
+          },
+        ],
       },
     },
   ]);

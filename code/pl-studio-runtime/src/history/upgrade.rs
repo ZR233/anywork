@@ -6754,8 +6754,11 @@ mod migration_tests {
                 move_owned_path: reject_report_move,
                 ..UpgradeFiles::DISK
             };
+            // The injected failure commits the v24 import before publishing its report.
+            // Recover that stage in isolation: tool-result maintenance is still pending
+            // and legitimately produces a different report through the public entrypoint.
             let error =
-                upgrade_history_with_files(&history_path, &thread_id, directory.path(), files)
+                upgrade_through_schema27(&history_path, &thread_id, directory.path(), files)
                     .await
                     .expect_err("the final report cannot replace an occupied destination");
             assert!(
@@ -6786,7 +6789,13 @@ mod migration_tests {
                     let conflicting_bytes = b"preserve the conflicting report";
                     std::fs::write(&report_path, conflicting_bytes)?;
                     assert!(matches!(
-                        upgrade_history(&history_path, &thread_id, directory.path()).await,
+                        upgrade_through_schema27(
+                            &history_path,
+                            &thread_id,
+                            directory.path(),
+                            UpgradeFiles::DISK,
+                        )
+                        .await,
                         Err(HistoryError::Conflict(_))
                     ));
                     assert_eq!(std::fs::read(&report_path)?, conflicting_bytes);
@@ -6797,7 +6806,13 @@ mod migration_tests {
                 _ => unreachable!(),
             }
 
-            let observed = upgrade_history(&history_path, &thread_id, directory.path()).await?;
+            let observed = upgrade_through_schema27(
+                &history_path,
+                &thread_id,
+                directory.path(),
+                UpgradeFiles::DISK,
+            )
+            .await?;
             let mut expected = staged;
             expected.status = UpgradeStatus::AlreadyCurrent;
             assert_eq!(

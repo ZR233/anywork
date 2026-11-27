@@ -9,6 +9,7 @@ import 'package:anywork/src/domain/timeline_file_download.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_file_download.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_media_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/tool_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/state/tool_data_artifact.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_file_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_attachments_view.dart';
@@ -123,7 +124,12 @@ Widget failedExecToolDetailPreview() => _toolHost(
       presentationContract: 'builtin.exec@2',
       statusString: 'failed',
       arguments: '{"command":"cargo flutter analyze"}',
-      output: '{"stdout":{"content":"Analyzing code/anywork..."},"stderr":{"content":"[stderr] error: missing required parameter"},"exitCode":101}',
+      output: 'Analyzing code/anywork...\n[stderr] error: missing required parameter',
+      toolData: const ToolDataArtifactPresent({
+        'stdout': 'Analyzing code/anywork...',
+        'stderr': '[stderr] error: missing required parameter',
+        'exitCode': 101,
+      }),
       exitCode: 101,
       createdAt: DateTime.utc(2025, 1, 1, 0, 0, 0),
       completedAt: DateTime.utc(2025, 1, 1, 0, 0, 8),
