@@ -109,7 +109,7 @@ pub struct AgentSpawn {
     pub model_selection: Option<NewThreadModelRoute>,
     /// Brief task description shown in the child list; required, nonempty, at most 80 Unicode characters.
     pub task_summary: AgentTaskSummary,
-    /// Full self-contained task: goals, approved contract, facts, interfaces, steps, ownership and verification. No application length limit; include pseudocode when useful.
+    /// Task goal and key constraints, plus full context or accessible handoff file references with purpose and version. Together cover approved contract, facts, interfaces, ownership and verification. No application length limit.
     pub message: String,
     /// Optional workspace-relative write directories, accepted only by directory Profiles.
     pub writable_paths: Option<Vec<String>>,
