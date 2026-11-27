@@ -40,7 +40,7 @@ pub struct Message {
     /// assistant 消息携带的工具调用集合；provider wire 映射忽略该字段。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCallRecord>>,
-    /// tool 结果消息携带的配对工具调用记录；provider wire 映射忽略该字段。
+    /// 工具结果的调用身份与作者数据，供协议投影。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_result: Option<ToolResultRecord>,
     #[serde(default)]
@@ -163,4 +163,18 @@ pub struct ToolResultRecord {
     pub call_id: String,
     pub name: String,
     pub kind: ToolCallKind,
+    /// Author-provided program value. A missing field preserves absence in historical messages.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_tool_data"
+    )]
+    pub data: Option<serde_json::Value>,
+}
+
+fn deserialize_tool_data<'de, D>(deserializer: D) -> Result<Option<serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde_json::Value::deserialize(deserializer).map(Some)
 }

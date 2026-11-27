@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
@@ -39,30 +40,29 @@ Map<String, Object?> readyFile(String id, String name, String origin) => {
     'byteLen': 8,
     'mediaType': 'text/markdown',
   },
-  'origin': {
-    'kind': origin,
-    if (origin == 'local') 'path': '/workspace/$name',
-    if (origin == 'remote') 'path': '/never-a-local-path/$name',
-  },
+  'origin': {'kind': origin, if (origin == 'local') 'path': '/workspace/$name'},
 };
 
 Map<String, Object?> deferredFile(String filename, int size) => {
   'status': 'deferred',
   'filename': filename,
-  'target': {'size': size, 'hostPrivate': 'must not reach UI or callbacks'},
+  'target': {
+    'canonicalPath': '/workspace/$filename',
+    'size': size,
+    'modifiedAt': null,
+    'executorInstance': 'executor-instance',
+    'workspaceRoot': '/workspace',
+    'workspaceBinding': null,
+    'hostWorkspaceAccess': true,
+  },
 };
 
-String artifacts(List<Map<String, Object?>> files, {int version = 1}) =>
-    jsonEncode([
-      {
-        'kind': 'opaque',
-        'payload': {
-          'format': 'pl.tool.files',
-          'version': version,
-          'content': jsonEncode({'caption': '交付文件', 'files': files}),
-        },
-      },
-    ]);
+Map<String, Object?> fileDisplayArtifact(List<Map<String, Object?>> files) => {
+  'fileDisplay': {'caption': '交付文件', 'files': files},
+};
+
+String artifacts(List<Map<String, Object?>> files) =>
+    jsonEncode([fileDisplayArtifact(files)]);
 
 ChatItemPresentation fileItem(String receipts, {BodyRef? reference}) {
   final item = chatPresentation(
@@ -190,7 +190,7 @@ void main() {
   );
 
   test(
-    'explicit opaque format preserves order, failures and source authority',
+    'direct fileDisplay receipt preserves order, failures and source authority',
     () {
       final value = TimelineFilesPresentation.fromArtifacts(
         artifacts([
@@ -214,8 +214,39 @@ void main() {
       expect(value.files.last.isMarkdown, isTrue);
       expect(value.files.first.attachment!.id, 'a');
       expect(
-        () =>
-            TimelineFilesPresentation.fromArtifacts(artifacts([], version: 3)),
+        () => TimelineFilesPresentation.fromArtifacts('[]'),
+        throwsFormatException,
+      );
+      expect(
+        () => TimelineFilesPresentation.fromArtifacts(
+          jsonEncode([
+            {'fileDisplay': 'not-an-object'},
+          ]),
+        ),
+        throwsFormatException,
+      );
+      expect(
+        () => TimelineFilesPresentation.fromArtifacts(
+          jsonEncode([
+            fileDisplayArtifact([readyFile('a', 'a.md', 'archive')]),
+            fileDisplayArtifact([readyFile('b', 'b.md', 'archive')]),
+          ]),
+        ),
+        throwsFormatException,
+      );
+      expect(
+        () => TimelineFilesPresentation.fromArtifacts(
+          jsonEncode([
+            {
+              'kind': 'opaque',
+              'payload': {
+                'format': 'pl.tool.files',
+                'version': 2,
+                'content': jsonEncode({'caption': '旧格式', 'files': []}),
+              },
+            },
+          ]),
+        ),
         throwsFormatException,
       );
       final invalid = readyFile('c', 'invalid.md', 'local');
@@ -227,46 +258,87 @@ void main() {
     },
   );
 
+  test('receipt accepts deferred size and HTTPS-image descriptor in original order', () {
+    final entries = [
+      readyFile('a', 'first.md', 'archive'),
+      deferredFile('large.tar', 360),
+      {
+        'status': 'networkImage',
+        'filename': 'image.png',
+        'url': 'https://example.invalid/image.png',
+      },
+      {'status': 'failed', 'filename': 'missing.zip', 'message': 'denied'},
+    ];
+    final files = TimelineFilesPresentation.fromArtifacts(artifacts(entries))
+        .files;
+    expect(files.map((file) => file.filename), [
+      'first.md',
+      'large.tar',
+      'image.png',
+      'missing.zip',
+    ]);
+    expect(files.map((file) => file.attachment?.id), ['a', null, null, null]);
+    expect(files[1].deferredSize, 360);
+    expect(files[1].localPath, isNull);
+    expect(files[2].networkImageUrl, 'https://example.invalid/image.png');
+    expect(files[3].error, 'denied');
+    expect(
+      () => TimelineFilesPresentation.fromArtifacts(
+        artifacts([deferredFile('invalid.tar', -1)]),
+      ),
+      throwsFormatException,
+    );
+  });
+
   test(
-    'v2 accepts deferred size and HTTPS-image descriptor in original order',
+    'Rust production receipt parses all file states and deferred target fields',
     () {
-      final entries = [
-        readyFile('a', 'first.md', 'archive'),
-        deferredFile('large.tar', 360),
-        {
-          'status': 'networkImage',
-          'filename': 'image.png',
-          'url': 'https://example.invalid/image.png',
-        },
-        {'status': 'failed', 'filename': 'missing.zip', 'message': 'denied'},
-      ];
-      final files = TimelineFilesPresentation.fromArtifacts(
-        artifacts(entries, version: 2),
-      ).files;
-      expect(files.map((file) => file.filename), [
+      final artifacts = jsonDecode(
+        File('test/fixtures/file_display_rust.json').readAsStringSync(),
+      );
+      final receipt = TimelineFilesPresentation.fromArtifacts(
+        jsonEncode(artifacts),
+      );
+      expect(receipt.caption, '交付文件');
+      expect(receipt.files.map((file) => file.filename), [
         'first.md',
-        'large.tar',
+        'download.tar',
         'image.png',
-        'missing.zip',
+        'network-image',
       ]);
-      expect(files.map((file) => file.attachment?.id), ['a', null, null, null]);
-      expect(files[1].deferredSize, 360);
-      expect(files[1].localPath, isNull);
-      expect(files[2].networkImageUrl, 'https://example.invalid/image.png');
-      expect(files[3].error, 'denied');
-      for (final legacyUnknown in entries.skip(1).take(2)) {
-        expect(
-          () => TimelineFilesPresentation.fromArtifacts(
-            artifacts([legacyUnknown]),
-          ),
-          throwsFormatException,
-        );
-      }
+
+      final ready = receipt.files[0];
+      expect(ready.attachment, isNotNull);
+      expect(ready.attachment!.modality, AttachmentModalityView.file);
+      expect(ready.origin, TimelineFileOrigin.local);
+      expect(ready.localPath, startsWith('/tmp/'));
+
+      final deferred = receipt.files[1];
+      expect(deferred.deferredSize, 360);
+      expect(deferred.localPath, isNull);
+      final artifact =
+          (artifacts as List<Object?>).single as Map<String, Object?>;
+      final fileDisplay = artifact['fileDisplay'] as Map<String, Object?>;
+      final entries = fileDisplay['files'] as List<Object?>;
+      final deferredSource = entries[1] as Map<String, Object?>;
+      final target = deferredSource['target'] as Map<String, Object?>;
+      expect(deferredSource['status'], 'deferred');
+      expect(deferredSource['filename'], deferred.filename);
+      expect(target['canonicalPath'], startsWith('/tmp/'));
+      expect(target['size'], deferred.deferredSize);
+      expect(target['modifiedAt'], isA<int>());
+      expect(target['executorInstance'], isA<String>());
+      expect(target['workspaceRoot'], startsWith('/tmp/'));
+      expect(target['workspaceBinding'], isA<String>());
+      expect(target['hostWorkspaceAccess'], isA<bool>());
+
       expect(
-        () => TimelineFilesPresentation.fromArtifacts(
-          artifacts([deferredFile('invalid.tar', -1)], version: 2),
-        ),
-        throwsFormatException,
+        receipt.files[2].networkImageUrl,
+        'https://example.invalid/image.png',
+      );
+      expect(
+        receipt.files[3].error,
+        'network image URL requires HTTPS, a host and no credentials',
       );
     },
   );
@@ -302,7 +374,7 @@ void main() {
             'message': 'Unavailable',
           },
           deferredFile(name, 800),
-        ], version: 2),
+        ]),
       );
 
       await tester.pumpWidget(
@@ -397,9 +469,7 @@ void main() {
     (tester) async {
       final resources = TimelineImageResources(threadId: 'thread');
       addTearDown(resources.release);
-      final item = fileItem(
-        artifacts([deferredFile('remote.zip', 600)], version: 2),
-      );
+      final item = fileItem(artifacts([deferredFile('remote.zip', 600)]));
       final retired = _Download();
       final current = _Download();
       final disposed = _Download();
@@ -531,7 +601,7 @@ void main() {
                       'filename': 'unsafe.png',
                       'url': 'http://example.invalid/unsafe.png',
                     },
-                  ], version: 2),
+                  ]),
                 ),
                 resources: resources,
                 readAttachment: null,

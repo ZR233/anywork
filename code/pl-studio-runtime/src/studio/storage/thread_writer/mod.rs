@@ -63,6 +63,9 @@ mod execution_index_tests;
 #[path = "tests/support.rs"]
 pub(crate) mod storage_fault_tests;
 #[cfg(test)]
+#[path = "tests/tool_result.rs"]
+mod tool_result_tests;
+#[cfg(test)]
 #[path = "tests/watchdog.rs"]
 mod watchdog_tests;
 #[cfg(test)]

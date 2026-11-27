@@ -8,7 +8,8 @@ pub(crate) mod legacy_checkpoint;
 pub(crate) mod sqlite_util;
 pub(crate) mod state;
 pub(crate) mod thread_writer;
-pub(in crate::studio) mod tool_task;
+pub(crate) mod tool_result_upgrade;
+pub(crate) mod tool_task;
 pub(in crate::studio) mod write_behind;
 
 #[cfg(test)]
@@ -51,6 +52,7 @@ mod schema_admission_tests {
                         text: Arc::from("存量正文"),
                     }],
                     tool_calls: vec![],
+                    tool_data: Default::default(),
                 }]
                 .into(),
             },

@@ -158,6 +158,7 @@ async fn mode_binding_recovery_replaces_unknown_snapshot_and_keeps_initial_conte
     let instructions = crate::instruction::decode_snapshot(&instruction_record.payload)?;
     let text = instructions.trusted_text();
     let restored_snapshot = ContextRecord {
+        tool_data: Default::default(),
         id: format!("instruction:{}:restored-v2", thread.id),
         turn_id: None,
         source: ContextSource::InstructionSnapshot {

@@ -1,5 +1,6 @@
 use std::fmt;
 
+use pl_agent_tool::ToolResult;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tokio_util::sync::CancellationToken;
@@ -27,7 +28,7 @@ pub struct HostInvocation {
     pub arguments: Map<String, Value>,
 }
 
-/// A tool result that the MCP adapter delivers as a single content block.
+/// One explicitly authored MCP content block.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum HostContent {
@@ -51,18 +52,26 @@ impl fmt::Debug for HostContent {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HostResult {
-    pub value: Value,
+    pub result: ToolResult<HostContent>,
     pub is_error: bool,
-    /// When present, this replaces the MCP structured result and its JSON text block.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content: Option<HostContent>,
+}
+
+impl HostResult {
+    /// Authors a JSON result with its default model-readable representation.
+    pub fn json(value: Value, is_error: bool) -> Self {
+        let content = vec![HostContent::Text(value.to_string())];
+        Self {
+            result: ToolResult::from_data(value, content),
+            is_error,
+        }
+    }
 }
 
 impl fmt::Debug for HostResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HostResult")
             .field("is_error", &self.is_error)
-            .field("content", &self.content)
+            .field("content", &self.result.content())
             .finish_non_exhaustive()
     }
 }

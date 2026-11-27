@@ -1,7 +1,6 @@
-//! Complete current JSON and retained session resources. No history dependency or migration.
+//! Complete current JSON and retained session resources. No history dependency.
 
 use std::{
-    borrow::Cow,
     collections::{HashMap, HashSet},
     io,
     path::PathBuf,
@@ -13,8 +12,8 @@ use std::sync::Arc;
 use anyhow::{Context, Result, ensure};
 use futures::future::BoxFuture;
 use pl_core::{
-    context::{ContextContent, ResourceReader},
-    thread::current::{RuntimeEpoch, ThreadCurrent},
+    context::{ContextContent, ResourceReader, ResourceReference},
+    thread::current::{CURRENT_SCHEMA_VERSION, RuntimeEpoch, ThreadCurrent},
 };
 use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
@@ -31,16 +30,37 @@ type BlockingCurrentWrite = Arc<dyn Fn(&std::path::Path, &[u8]) -> io::Result<()
 // Owned by one writer incarnation and one session directory, never shared between owners.
 pub(super) type VerifiedResources = HashSet<(String, String, u64, String)>;
 
-/// Explicit schema-upgrade read boundary. It uses the same decoder and resource verification as
-/// normal current loading, while returning the exact bytes so an existing file can be preserved.
+/// Explicit history-upgrade read boundary. Verify the decoded Current and preserve its exact bytes.
 pub(crate) async fn read_for_upgrade(
     directory: impl Into<PathBuf>,
     thread_id: &str,
 ) -> Result<(ThreadCurrent, Vec<u8>)> {
     let file = CurrentFile::new(directory.into(), thread_id.to_owned());
-    file.load_with_bytes()
+    file.load_with_bytes(true)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Thread current is missing"))
+}
+
+fn current_version(bytes: &[u8]) -> Result<u32> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Header {
+        schema_version: u32,
+    }
+    Ok(serde_json::from_slice::<Header>(bytes)?.schema_version)
+}
+
+fn decode_for_upgrade(bytes: &[u8], thread_id: &str) -> Result<ThreadCurrent> {
+    if current_version(bytes)? == 1 {
+        let mut old: serde_json::Value = serde_json::from_slice(bytes)?;
+        super::tool_result_upgrade::upgrade_state(&mut old)?;
+        old["schemaVersion"] = CURRENT_SCHEMA_VERSION.into();
+        let mut current = ThreadCurrent::from_json(&serde_json::to_vec(&old)?, thread_id)?;
+        super::tool_result_upgrade::upgrade_pending_tool_messages(&mut current.state)?;
+        Ok(current)
+    } else {
+        Ok(ThreadCurrent::from_json(bytes, thread_id)?)
+    }
 }
 
 pub(crate) async fn verify_for_upgrade(
@@ -107,21 +127,78 @@ impl CurrentFile {
     }
 
     pub(super) async fn load(&self) -> Result<Option<ThreadCurrent>> {
-        Ok(self.load_with_bytes().await?.map(|(current, _)| current))
+        Ok(self
+            .load_with_bytes(false)
+            .await?
+            .map(|(current, _)| current))
     }
 
-    async fn load_with_bytes(&self) -> Result<Option<(ThreadCurrent, Vec<u8>)>> {
-        let started = Instant::now();
+    async fn read_bytes(&self) -> Result<Option<Vec<u8>>> {
         let path = self.directory.join(CURRENT_FILE_NAME);
-        let bytes = match tokio::fs::read(&path).await {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
+        match tokio::fs::read(&path).await {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error).with_context(|| format!("read {}", path.display())),
+        }
+    }
+
+    /// Identifies a legacy file without decoding its producer state or verifying its resources.
+    pub(super) async fn legacy_bytes(&self) -> Result<Option<Vec<u8>>> {
+        let Some(bytes) = self.read_bytes().await? else {
+            return Ok(None);
         };
+        let schema = current_version(&bytes).context("read Current schema for maintenance")?;
+        match schema {
+            CURRENT_SCHEMA_VERSION => Ok(None),
+            1 => Ok(Some(bytes)),
+            other => anyhow::bail!("unsupported current schema {other}"),
+        }
+    }
+
+    pub(super) async fn prepare_legacy(
+        &self,
+        original: Vec<u8>,
+    ) -> Result<(ThreadCurrent, Vec<u8>)> {
+        self.decode_and_verify(original, true).await
+    }
+
+    /// The coordinator owns Current admission for this directory through legacy publication.
+    pub(super) fn publish_legacy(&self, current: &ThreadCurrent, original: &[u8]) -> Result<()> {
+        let encoded = serde_json::to_vec(current)?;
+        let backup_root = self.directory.join("migration-backups");
+        let backup = backup_root.join("current-tool-result-v1");
+        std::fs::create_dir_all(&backup)?;
+        #[cfg(unix)]
+        for directory in [&backup, &backup_root, &self.directory] {
+            std::fs::File::open(directory)?.sync_all()?;
+        }
+        let backup = backup.join("current.original.json");
+        if backup.try_exists()? {
+            ensure!(
+                std::fs::read(&backup)?.as_slice() == original,
+                "current migration backup differs from source"
+            );
+        } else {
+            pl_tool::workspace::write_file_atomically(&backup, original)?;
+        }
+        pl_tool::workspace::write_file_atomically(&self.directory.join(CURRENT_FILE_NAME), &encoded)
+            .context("publish upgraded Current")
+    }
+
+    async fn decode_and_verify(
+        &self,
+        bytes: Vec<u8>,
+        upgrade: bool,
+    ) -> Result<(ThreadCurrent, Vec<u8>)> {
+        let path = self.directory.join(CURRENT_FILE_NAME);
         let file = self.clone();
         let (current, bytes) = tokio::task::spawn_blocking(move || {
-            let current = ThreadCurrent::from_json(&bytes, &file.thread_id)
-                .with_context(|| format!("invalid Thread current {}", path.display()))?;
+            let current = if upgrade {
+                decode_for_upgrade(&bytes, &file.thread_id)
+            } else {
+                ThreadCurrent::from_json(&bytes, &file.thread_id).map_err(anyhow::Error::from)
+            }
+            .with_context(|| format!("invalid Thread current {}", path.display()))?;
             Ok::<_, anyhow::Error>((current, bytes))
         })
         .await
@@ -132,6 +209,15 @@ impl CurrentFile {
             CancellationToken::new(),
         )
         .await?;
+        Ok((current, bytes))
+    }
+
+    async fn load_with_bytes(&self, upgrade: bool) -> Result<Option<(ThreadCurrent, Vec<u8>)>> {
+        let started = Instant::now();
+        let Some(bytes) = self.read_bytes().await? else {
+            return Ok(None);
+        };
+        let (current, bytes) = self.decode_and_verify(bytes, upgrade).await?;
         tracing::debug!(target: "current_work",
             thread_id = self.thread_id,
             current_load_ms = started.elapsed().as_secs_f64() * 1000.0,
@@ -220,30 +306,38 @@ async fn verify_recovery_resources(
     cancellation: CancellationToken,
 ) -> Result<()> {
     let mut referenced = HashMap::new();
-    for content in current.recovery_contents() {
-        let reference = match content {
-            ContextContent::Resource { reference } => Cow::Borrowed(reference),
-            ContextContent::Opaque { payload } => {
-                let Some(attachment) = pl_model::runtime::decode_attachment(payload)
-                    .context("decode model attachment required by current")?
-                else {
-                    continue;
-                };
-                Cow::Owned(attachment.reference)
-            }
-            ContextContent::Text { .. } => continue,
-        };
-        // One attempt can refer to the same immutable material through confirmed context and
-        // pending delivery. Read it once, but never hide a different identity or metadata claim.
+    // A capture can name the same material through more than one saved slot. Deduplicate exact
+    // claims while keeping conflicting identity or metadata available to the verifier.
+    let mut retain = |reference: ResourceReference| {
         let key = (
             reference.id().to_owned(),
             reference.content_digest().to_owned(),
             reference.byte_len(),
             reference.media_type().to_owned(),
         );
-        referenced
-            .entry(key)
-            .or_insert_with(|| reference.into_owned());
+        referenced.entry(key).or_insert(reference);
+    };
+    for content in current.recovery_contents() {
+        let reference = match content {
+            ContextContent::Resource { reference } => reference.clone(),
+            ContextContent::Media { payload } => {
+                let Some(attachment) = pl_model::runtime::decode_attachment(payload)
+                    .context("decode model attachment required by current")?
+                else {
+                    continue;
+                };
+                attachment.reference
+            }
+            ContextContent::Text { .. } | ContextContent::Opaque { .. } => continue,
+        };
+        retain(reference);
+    }
+    for delivery in current.state.deliveries.iter() {
+        for reference in pl_tool::exec::saved_command_resources(delivery.output.details())
+            .context("decode retained command output required by current")?
+        {
+            retain(reference);
+        }
     }
     verified.retain(|key| referenced.contains_key(key));
     for (key, reference) in referenced {
@@ -289,6 +383,7 @@ mod tests {
                 text: "完整正文".repeat(32 * 1024).into(),
             }],
             tool_calls: Vec::new(),
+            tool_data: Default::default(),
         }]
         .into();
         current.model_call = Some(CurrentModelCall {
@@ -397,6 +492,7 @@ mod tests {
                 reference: reference.clone(),
             }],
             tool_calls: Vec::new(),
+            tool_data: Default::default(),
         }]
         .into();
         file.save(current).await?;

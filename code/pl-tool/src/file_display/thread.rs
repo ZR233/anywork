@@ -1,8 +1,5 @@
 //! Product binding: frozen grants, archive membership, and saved display receipts.
-use super::{
-    FILE_DISPLAY_FORMAT, FILE_DISPLAY_VERSION, FileDisplayOrigin, FileDisplayReceipt,
-    FileDisplayResult, ShowFilesInput, failure,
-};
+use super::{FileDisplayOrigin, FileDisplayReceipt, FileDisplayResult, ShowFilesInput, failure};
 use crate::{
     media::{DomainMediaHost, ToolMediaHost, domain_error},
     workspace_file::{
@@ -11,7 +8,7 @@ use crate::{
 };
 use pl_agent_tool::typed::TypedTool;
 use pl_core::{
-    context::{ContextContent, OpaquePayload, ResourceReference},
+    context::{ContextContent, ResourceReference},
     tool::{
         ToolOutput,
         opaque::{CallContext, ToolError},
@@ -198,16 +195,22 @@ impl<B: WorkspaceFileBackend + 'static, H: ToolMediaHost> TypedTool for ThreadSh
                 });
             }
         }
-        let payload = OpaquePayload::new(
-            FILE_DISPLAY_FORMAT,
-            FILE_DISPLAY_VERSION,
-            serde_json::to_string(&FileDisplayReceipt {
-                caption: output.caption,
-                files,
-            })
-            .map_err(ToolError::new)?,
-        )
+        let data = serde_json::json!({"files": files.iter().map(|file| match file {
+            FileDisplayResult::Ready { resource, filename, modality, .. } => serde_json::json!({
+                "status": "ready", "filename": filename, "resource": resource, "modality": modality,
+            }),
+            FileDisplayResult::Failed { filename, message } => serde_json::json!({
+                "status": "failed", "filename": filename, "message": message,
+            }),
+            FileDisplayResult::Deferred { filename, .. } => serde_json::json!({"status": "deferred", "filename": filename}),
+            FileDisplayResult::NetworkImage { filename, .. } => serde_json::json!({"status": "networkImage", "filename": filename}),
+        }).collect::<Vec<_>>(), "caption": output.caption});
+        let details = serde_json::to_value(FileDisplayReceipt {
+            caption: output.caption,
+            files,
+        })
         .map_err(ToolError::new)?;
-        Ok(ToolOutput::new(payload, model_context))
+        Ok(ToolOutput::from_data(data, model_context)
+            .with_details(serde_json::json!({"fileDisplay": details})))
     }
 }

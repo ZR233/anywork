@@ -304,6 +304,7 @@ impl InstructionSnapshot {
         let trusted_blocks = 1 + self.developer.len();
         let mut records = Vec::with_capacity(1 + self.user.len());
         records.push(ContextRecord {
+            tool_data: Default::default(),
             id: format!("instruction:{thread_id}:0"),
             turn_id: None,
             source: ContextSource::Instruction,
@@ -315,6 +316,7 @@ impl InstructionSnapshot {
         for (offset, block) in self.user.iter().enumerate() {
             let index = trusted_blocks + offset;
             records.push(ContextRecord {
+                tool_data: Default::default(),
                 id: format!("instruction:{thread_id}:{index}"),
                 turn_id: None,
                 source: ContextSource::RuntimeFact {

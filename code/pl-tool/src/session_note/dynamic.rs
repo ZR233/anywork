@@ -1,13 +1,12 @@
 //! Session note access through opaque Thread extensions instead of core business state.
 use super::*;
 use pl_agent_tool::typed::decode_json;
-use pl_core::context::{ContextContent, OpaquePayload};
+use pl_core::context::OpaquePayload;
 use pl_core::thread::extensions::ExtensionMutation;
 use pl_core::tool::{
     ToolOutput,
     opaque::{CallContext, Registration, ToolError},
 };
-use std::sync::Arc;
 
 const NOTE_FORMAT: &str = "pl.tool.session-note";
 
@@ -147,15 +146,6 @@ impl NoteTool {
                 note_result(status, &note)
             }
         };
-        let result = serde_json::to_string(&result)
-            .map_err(pl_protocol::PureError::from)
-            .map_err(ToolError::new)?;
-        Ok(ToolOutput::new(
-            OpaquePayload::text(result.clone()),
-            vec![ContextContent::Text {
-                text: Arc::from(result),
-            }],
-        )
-        .with_extension_mutations(mutations))
+        Ok(ToolOutput::json(result).with_extension_mutations(mutations))
     }
 }

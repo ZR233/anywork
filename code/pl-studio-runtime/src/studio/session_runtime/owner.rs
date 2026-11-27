@@ -40,9 +40,9 @@ impl std::fmt::Debug for StudioSessionOwner {
         f.write_str("StudioSessionOwner")
     }
 }
-#[derive(Serialize)]
+#[derive(Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-struct Profiles<'a> {
+pub(crate) struct Profiles<'a> {
     delegation_mode: crate::DelegationMode,
     profiles: Vec<crate::AgentProfile>,
     diagnostics: &'a [crate::config::AgentProfileDiagnostic],
@@ -430,7 +430,9 @@ mod tests {
             tool.execute(input(value), context("root", CancellationToken::new())),
         )
         .await??;
-        Ok(serde_json::from_str(result.payload().content())?)
+        Ok(serde_json::from_value(
+            result.data().context("query data")?.clone(),
+        )?)
     }
 
     fn record(id: &str, parent: Option<&str>, path: &std::path::Path) -> crate::Thread {

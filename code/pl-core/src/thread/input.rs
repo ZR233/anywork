@@ -457,6 +457,7 @@ impl Owner {
                     turn_id: Some(turn_id.into()),
                     source: ContextSource::User,
                     content: record.input.context.clone(),
+                    tool_data: Default::default(),
                     tool_calls: Vec::new(),
                 });
             }

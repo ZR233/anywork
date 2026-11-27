@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::NewThreadModelRoute;
 
 /// 成员执行后端的封闭绑定。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum AgentBinding {
     Native(NativeAgentConfig),
@@ -32,7 +32,7 @@ impl AgentBinding {
 /// `route` 是 child 创建期冻结的最终模型选择；根成员的当前路由由既有产品命令
 /// 修改并按下一 Turn 生效，目录与 binding 只读取已提交事实，不双写。系统指令
 /// 与执行配置仍由指令快照、Profile 冻结与 Native 所属域承载，正文不进入目录。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NativeAgentConfig {
     /// 创建期冻结的完整模型路由；根成员为 `None`（由既有路由 owner 管理）。
@@ -44,7 +44,7 @@ pub struct NativeAgentConfig {
 }
 
 /// ACP 后端绑定：只引用用户级定义的稳定 ID，不持久化进程内连接修订。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AcpAgentConfig {
     pub account_id: String,

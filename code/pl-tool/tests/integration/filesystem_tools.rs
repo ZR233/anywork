@@ -96,8 +96,8 @@ async fn production_bindings_keep_file_outputs_and_write_modes() {
     )
     .await
     .unwrap();
-    assert_eq!(create.payload().content(), "Created directory nested");
-    assert_eq!(create.payload().format(), "text/plain");
+    assert_eq!(create.data().unwrap(), "Created directory nested");
+
     let input = json!({"path":"nested/a","content":"中文\n","mode":"create"});
     let written = call(
         ThreadWriteFileTool::new(backend.clone(), workspace.clone()),
@@ -105,10 +105,9 @@ async fn production_bindings_keep_file_outputs_and_write_modes() {
     )
     .await
     .unwrap();
-    assert_eq!(written.payload().format(), "pl.tool.file-write");
-    assert_eq!(written.payload().version(), 1);
+
     assert_eq!(
-        serde_json::from_str::<Value>(written.payload().content()).unwrap(),
+        written.data().unwrap().clone(),
         json!({"path":"nested/a","mode":"create","bytesWritten":7})
     );
     assert!(
@@ -145,9 +144,8 @@ async fn production_bindings_keep_file_outputs_and_write_modes() {
     )
     .await
     .unwrap();
-    assert_eq!(stat.payload().format(), "pl.tool.path-stat");
-    assert_eq!(stat.payload().version(), 1);
-    let value: Value = serde_json::from_str(stat.payload().content()).unwrap();
+
+    let value: Value = stat.data().unwrap().clone();
     assert_eq!(value["type"], "file");
     assert_eq!(value["len"], 11);
     let absent = call(
@@ -157,7 +155,7 @@ async fn production_bindings_keep_file_outputs_and_write_modes() {
     .await
     .unwrap();
     assert_eq!(
-        serde_json::from_str::<Value>(absent.payload().content()).unwrap(),
+        absent.data().unwrap().clone(),
         json!({"path":"absent","exists":false})
     );
     let copied = mutation(
@@ -167,7 +165,7 @@ async fn production_bindings_keep_file_outputs_and_write_modes() {
     )
     .await
     .unwrap();
-    assert_eq!(copied.payload().content(), "Copied nested/a to nested/b");
+    assert_eq!(copied.data().unwrap(), "Copied nested/a to nested/b");
     let moved = mutation(
         WorkspaceMutationKind::Move,
         workspace.clone(),
@@ -175,7 +173,7 @@ async fn production_bindings_keep_file_outputs_and_write_modes() {
     )
     .await
     .unwrap();
-    assert_eq!(moved.payload().content(), "Moved nested/b to nested/c");
+    assert_eq!(moved.data().unwrap(), "Moved nested/b to nested/c");
     let deleted = mutation(
         WorkspaceMutationKind::Delete,
         workspace.clone(),
@@ -183,14 +181,13 @@ async fn production_bindings_keep_file_outputs_and_write_modes() {
     )
     .await
     .unwrap();
-    assert_eq!(deleted.payload().content(), "Deleted nested/c");
+    assert_eq!(deleted.data().unwrap(), "Deleted nested/c");
     let patched = patch(backend.clone(), workspace.clone()).execute(
         OpaquePayload::text("*** Begin Patch\n*** Update File: nested/a\n@@\n-replacement\n+patched\n*** End Patch"),
         context(),
     ).await.unwrap();
-    assert_eq!(patched.payload().format(), "pl.tool.workspace-file");
-    assert_eq!(patched.payload().version(), 1);
-    let output: Value = serde_json::from_str(patched.payload().content()).unwrap();
+
+    let output: Value = patched.data().unwrap().clone();
     assert_eq!(
         output,
         json!({
@@ -204,8 +201,18 @@ async fn production_bindings_keep_file_outputs_and_write_modes() {
     ), context()).await.unwrap_err();
     let source = error
         .source
-        .downcast_ref::<pl_protocol::PureError>()
+        .downcast_ref::<pl_patch::PatchFailure>()
         .unwrap();
+    assert_eq!(
+        source.applied_changes,
+        vec![pl_patch::PatchChange::Add {
+            path: "applied".into()
+        }]
+    );
+    assert_eq!(
+        error.observed_output().unwrap().data().unwrap()["applied_changes"],
+        json!([{"Add":{"path":"applied"}}])
+    );
     assert!(
         source
             .to_string()

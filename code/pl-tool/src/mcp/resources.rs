@@ -60,7 +60,49 @@ impl McpResourceToolKind {
         };
         pl_agent_tool::ToolDefinition::json(self.name(), description, schema)
             .expect("static MCP resource definition")
+            .with_output_schema(match self {
+                Self::ListResources => resource_list_schema::<rmcp::model::ListResourcesResult>(),
+                Self::ListResourceTemplates => {
+                    resource_list_schema::<rmcp::model::ListResourceTemplatesResult>()
+                }
+                Self::ReadResource => read_resource_schema(),
+            })
+            .expect("static MCP resource output schema")
     }
+}
+
+fn resource_list_schema<T: schemars::JsonSchema>() -> serde_json::Value {
+    use serde_json::{Value, json};
+    let mut page = crate::binding::program_schema::<T>();
+    let object = page
+        .as_object_mut()
+        .expect("resource list schema is an object");
+    let draft = object.remove("$schema");
+    let definitions = object.remove("$defs");
+    // The frozen host returns one protocol page or pages keyed by server ID.
+    let mut result = json!({"anyOf": [page, {"type":"object", "additionalProperties": page}]});
+    if let Some(Value::String(draft)) = draft {
+        result["$schema"] = draft.into();
+    }
+    if let Some(definitions) = definitions {
+        result["$defs"] = definitions;
+    }
+    result
+}
+
+fn read_resource_schema() -> serde_json::Value {
+    use serde_json::json;
+    let mut schema = crate::binding::program_schema::<rmcp::model::ReadResourceResult>();
+    // The media owner consumes the transport's blob and retains its exact bytes.
+    schema["properties"]["contents"]["items"] = json!({
+        "type":"object", "properties": {
+            "uri":{"type":"string"},"mimeType":{"type":"string"},"_meta":{"type":"object"},
+            "text":{"type":"string"},
+            "retainedResource":crate::media::resource_reference_schema()
+        }, "required":["uri"], "oneOf":[{"required":["text"]},{"required":["retainedResource"]}],
+        "additionalProperties":false
+    });
+    schema
 }
 
 enum ResourceTool<H> {
@@ -134,21 +176,21 @@ impl<H: ToolMediaHost> pl_agent_tool::Tool for ThreadMcpResourceTool<H> {
                 tool.execute(input, context)
                     .await
                     .map_err(|error| map_error(error, |()| Vec::new()))
-                    .and_then(|output| map_output(output, |()| Vec::new()))
+                    .map(|output| map_output(output, |()| Vec::new()))
             }
             ResourceTool::Templates(tool) => {
                 let input = pl_agent_tool::typed::decode_json(&text).map_err(ToolError::new)?;
                 tool.execute(input, context)
                     .await
                     .map_err(|error| map_error(error, |()| Vec::new()))
-                    .and_then(|output| map_output(output, |()| Vec::new()))
+                    .map(|output| map_output(output, |()| Vec::new()))
             }
             ResourceTool::Read(tool) => {
                 let input = pl_agent_tool::typed::decode_json(&text).map_err(ToolError::new)?;
                 tool.execute(input, context)
                     .await
                     .map_err(|error| map_error(error, |content| content))
-                    .and_then(|output| map_output(output, |content| content))
+                    .map(|output| map_output(output, |content| content))
             }
         }
     }

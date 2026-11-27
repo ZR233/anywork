@@ -122,6 +122,33 @@ pub(super) async fn event(db: &impl ConnectionTrait, id: &str) -> Result<Option<
     .transpose()
 }
 
+/// The live original has a fixed event ID. Imported receipts may have a historical event ID and
+/// always have a chunked body, which can be located through the existing call and owner indexes.
+pub(super) async fn tool_receipt_events(
+    db: &impl ConnectionTrait,
+    call_id: &str,
+    original_id: &str,
+    body_key: &str,
+) -> Result<Vec<(Record, bool)>> {
+    let rows = db
+        .query_all_raw(statement(
+            &format!(
+                "SELECT {COLUMNS}, b.body_id IS NOT NULL AS chunked \
+                 FROM history_events AS e LEFT JOIN history_bodies AS b \
+                   ON b.owner_event_id=e.event_id AND b.body_key=? \
+                 WHERE e.call_id=? AND (e.event_id=? OR b.body_id IS NOT NULL) LIMIT 3"
+            ),
+            vec![body_key.into(), call_id.into(), original_id.into()],
+        ))
+        .await?;
+    rows.into_iter()
+        .map(|row| {
+            let chunked = row.try_get::<i64>("", "chunked")? != 0;
+            Ok((decode_row(row)?, chunked))
+        })
+        .collect()
+}
+
 pub(super) async fn event_head(db: &impl ConnectionTrait) -> Result<u64> {
     let row = db
         .query_one_raw(statement(
@@ -607,6 +634,69 @@ pub(super) async fn window(
         "history body window read"
     );
     Ok(assembled)
+}
+
+async fn validate_chunk_layout(db: &impl ConnectionTrait, body: &Body) -> Result<()> {
+    let chunk_size = BODY_CHUNK_BYTES as u64;
+    let chunk_count = body.length.div_ceil(chunk_size);
+    let final_chunk = chunk_count.saturating_sub(1);
+    let final_size = body.length - final_chunk * chunk_size;
+    // Range reads can end inside a chunk. Validate the complete layout before hashing the body.
+    let layout = db
+        .query_one_raw(statement(
+            "SELECT count(*) AS chunks, coalesce(sum(length(data)),0) AS bytes,
+                count(CASE WHEN chunk_no<0 OR chunk_no>=? OR typeof(data)<>'blob'
+                      OR length(data)<>CASE WHEN chunk_no=? THEN ? ELSE ? END
+                      THEN 1 END) AS malformed
+             FROM history_body_chunks WHERE body_id=?",
+            vec![
+                number(chunk_count)?.into(),
+                number(final_chunk)?.into(),
+                number(final_size)?.into(),
+                number(chunk_size)?.into(),
+                body.id.clone().into(),
+            ],
+        ))
+        .await?
+        .ok_or_else(|| {
+            HistoryError::Integrity("stored body chunk layout summary is missing".into())
+        })?;
+    // The body id and chunk number form the primary key, so count plus range
+    // validates continuity without reading the BLOBs into a second buffer.
+    if layout.try_get::<i64>("", "chunks")? != number(chunk_count)?
+        || layout.try_get::<i64>("", "bytes")? != number(body.length)?
+        || layout.try_get::<i64>("", "malformed")? != 0
+    {
+        return Err(HistoryError::Integrity(format!(
+            "stored body chunk layout differs from body {}",
+            body.id
+        )));
+    }
+    Ok(())
+}
+
+/// Materializes one whole immutable body, checking its layout and digest in the same SQL snapshot.
+pub(super) async fn read_verified_body(db: &impl ConnectionTrait, body: &Body) -> Result<Vec<u8>> {
+    let length = usize::try_from(body.length)
+        .map_err(|_| HistoryError::Integrity("history body exceeds addressable memory".into()))?;
+    validate_chunk_layout(db, body).await?;
+    let mut bytes = Vec::new();
+    while bytes.len() < length {
+        let chunk = window(db, body, bytes.len() as u64, BODY_CHUNK_BYTES as u32).await?;
+        if chunk.is_empty() {
+            return Err(HistoryError::Integrity("history body stopped early".into()));
+        }
+        bytes.try_reserve(chunk.len()).map_err(|error| {
+            HistoryError::Integrity(format!("cannot allocate stored history body: {error}"))
+        })?;
+        bytes.extend_from_slice(&chunk);
+    }
+    if Sha256::digest(&bytes).as_slice() != body.digest.as_slice() {
+        return Err(HistoryError::Integrity(
+            "stored body digest mismatch".into(),
+        ));
+    }
+    Ok(bytes)
 }
 
 pub(super) async fn insert(db: &impl ConnectionTrait, event: &HistoryEvent) -> Result<()> {

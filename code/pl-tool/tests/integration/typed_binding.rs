@@ -153,11 +153,10 @@ async fn json_binding_decodes_before_handler_and_encodes_success_exactly_once() 
             );
         } else {
             let output = result.unwrap();
-            assert_eq!(output.payload().format(), "application/json");
-            assert_eq!(output.payload().version(), 1);
-            assert_eq!(output.payload().content(), r#""verbatim""#);
+
+            assert_eq!(output.data().unwrap(), "verbatim");
             assert!(
-                matches!(&output.context()[0], ContextContent::Text { text } if text.as_ref() == output.payload().content())
+                matches!(&output.content()[0], ContextContent::Text { text } if text.as_ref() == r#""verbatim""#)
             );
         }
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -200,8 +199,8 @@ impl ObservedFailure {
         _args: EmptyArgs,
         _context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
-        Err(self.failure().with_output(ToolOutput::new(
-            OpaquePayload::text("observed before failure"),
+        Err(self.failure().with_output(ToolOutput::from_data(
+            serde_json::json!("observed before failure"),
             vec![ContextContent::Text {
                 text: "delivered before failure".into(),
             }],
@@ -278,11 +277,11 @@ async fn native_errors_keep_source_output_and_close_identity() {
         .collect::<Vec<_>>();
     assert_eq!(deliveries.len(), 1);
     assert_eq!(
-        deliveries[0].output.payload().content(),
+        deliveries[0].output.data().unwrap(),
         "observed before failure"
     );
     assert!(
-        matches!(&deliveries[0].output.context()[0], ContextContent::Text { text } if text.as_ref() == "delivered before failure")
+        matches!(&deliveries[0].output.content()[0], ContextContent::Text { text } if text.as_ref() == "delivered before failure")
     );
     thread.close().await.unwrap();
 }

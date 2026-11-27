@@ -70,23 +70,15 @@ impl<B: WorkspaceFileBackend + 'static> pl_agent_tool::Tool for ThreadWorkspaceF
             .map_err(ToolError::new)?;
         let failure = result.failure;
         // Projection was produced at execution time. Historical readers never rerun it.
-        let output = ToolOutput::new(
-            OpaquePayload::new("pl.tool.workspace-file", 1, result.output)
-                .map_err(ToolError::new)?,
+        let output = ToolOutput::from_data(
+            result.data,
             vec![ContextContent::Text {
                 text: Arc::from(result.model_output),
             }],
         );
-        if result.success {
-            Ok(output)
-        } else {
-            Err(ToolError::new(tool_error(
-                self.kind.name(),
-                failure
-                    .map(|failure| failure.diagnostic)
-                    .unwrap_or_else(|| "workspace operation failed".into()),
-            ))
-            .with_output(output))
+        match failure {
+            None => Ok(output),
+            Some(failure) => Err(ToolError::new(failure).with_output(output)),
         }
     }
 }

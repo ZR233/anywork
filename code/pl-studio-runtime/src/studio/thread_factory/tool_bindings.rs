@@ -185,7 +185,7 @@ impl StudioThreadFactory {
         let loaded = snapshot
             .extensions
             .values()
-            .filter_map(|record| pl_tool::skill::saved_skill_name(&record.payload).ok())
+            .filter_map(|record| pl_tool::skill::saved_skill_extension_name(&record.payload).ok())
             .collect::<Vec<_>>();
         pl_tool::skill::build_skill_suggestions_from_catalog(catalog.snapshot(), query, &loaded)
     }

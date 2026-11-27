@@ -1,11 +1,9 @@
 //! Model-callable discovery over the Thread's read-only opaque tool directory.
-use pl_core::context::{ContextContent, OpaquePayload};
 use pl_core::tool::{
     ToolOutput,
     opaque::{CallContext, ToolError},
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 /// Matches stable tool identities without parsing provider declaration formats.
 #[derive(Debug)]
@@ -17,7 +15,7 @@ pub struct SearchInput {
     query: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 struct SearchResult {
     tool_ids: Vec<String>,
@@ -46,17 +44,11 @@ impl pl_agent_tool::typed::TypedTool for DiscoverTools {
             .take(20)
             .map(|tool| tool.tool_id.clone())
             .collect::<Vec<_>>();
-        let result = serde_json::to_string(&SearchResult {
+        let result = serde_json::to_value(SearchResult {
             tool_ids: ids.clone(),
         })
         .map_err(ToolError::new)?;
-        Ok(ToolOutput::new(
-            OpaquePayload::text(result.clone()),
-            vec![ContextContent::Text {
-                text: Arc::from(result),
-            }],
-        )
-        .with_revealed_tools(ids))
+        Ok(ToolOutput::json(result).with_revealed_tools(ids))
     }
 }
 
@@ -67,6 +59,8 @@ pub fn discover_tools_definition() -> pl_agent_tool::ToolDefinition {
         pl_agent_tool::typed::input_schema_for::<SearchInput>(),
     )
     .expect("static tool definition")
+    .with_output_schema(crate::binding::program_schema::<SearchResult>())
+    .expect("static discovery result schema")
 }
 
 const DISCOVER_TOOLS_NAME: &str = "discover_tools";

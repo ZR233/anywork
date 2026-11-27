@@ -3,10 +3,15 @@ use super::WorkflowBinding;
 use super::machine::{
     EmptyInput, RestartInput, TransitionInput, WorkflowMachine, WorkflowOperation,
 };
+use super::output::{
+    WorkflowCurrentSnapshot, WorkflowGraphSnapshot, WorkflowHistorySnapshot,
+    WorkflowMutationResponse, WorkflowNextSnapshot,
+};
 use super::state::validate_session_state_size;
 use crate::thread_mode_id::MODE_EXTENSION;
 use crate::tool_json::{JsonToolInput, json_output, put_extension};
 use crate::workflow_tool::WorkflowSessionState;
+use pl_agent_tool::typed::{input_schema_for, output_schema_for};
 use pl_agent_tool::{Tool, ToolDefinition, ToolHandle};
 use pl_core::{
     context::OpaquePayload,
@@ -74,39 +79,45 @@ pub(crate) enum WorkflowOperationKind {
 }
 impl WorkflowOperationKind {
     pub(crate) fn definition(self) -> Result<ToolDefinition, pl_agent_tool::DefinitionError> {
-        let (name, description, schema) = match self {
+        let (name, description, input_schema, output_schema) = match self {
             Self::Current => (
                 super::TOOL_WORKFLOW_CURRENT,
                 "Read the current workflow run, state and CAS revision.",
-                pl_agent_tool::typed::input_schema_for::<EmptyInput>(),
+                input_schema_for::<EmptyInput>(),
+                output_schema_for::<WorkflowCurrentSnapshot>(),
             ),
             Self::Next => (
                 super::TOOL_WORKFLOW_NEXT,
                 "Read direct next workflow transitions and their guards.",
-                pl_agent_tool::typed::input_schema_for::<EmptyInput>(),
+                input_schema_for::<EmptyInput>(),
+                output_schema_for::<WorkflowNextSnapshot<'_>>(),
             ),
             Self::Graph => (
                 super::TOOL_WORKFLOW_GRAPH,
                 "Read the frozen workflow graph used by this Thread's tools.",
-                pl_agent_tool::typed::input_schema_for::<EmptyInput>(),
+                input_schema_for::<EmptyInput>(),
+                output_schema_for::<WorkflowGraphSnapshot<'_>>(),
             ),
             Self::History => (
                 super::TOOL_WORKFLOW_HISTORY,
                 "Read saved workflow transitions and archive receipts.",
-                pl_agent_tool::typed::input_schema_for::<EmptyInput>(),
+                input_schema_for::<EmptyInput>(),
+                output_schema_for::<WorkflowHistorySnapshot<'_>>(),
             ),
             Self::Transition => (
                 super::TOOL_WORKFLOW_TRANSITION,
                 "Complete the current workflow state and transition along a valid edge (or set force=true to jump to any valid state ID in the graph). Call this tool alone.",
-                pl_agent_tool::typed::input_schema_for::<TransitionInput>(),
+                input_schema_for::<TransitionInput>(),
+                output_schema_for::<WorkflowMutationResponse>(),
             ),
             Self::Restart => (
                 super::TOOL_WORKFLOW_RESTART,
                 "Archive the current run and begin a new lineage using run, revision and state CAS. Call this tool alone.",
-                pl_agent_tool::typed::input_schema_for::<RestartInput>(),
+                input_schema_for::<RestartInput>(),
+                output_schema_for::<WorkflowMutationResponse>(),
             ),
         };
-        ToolDefinition::json(name, description, schema)
+        ToolDefinition::json(name, description, input_schema)?.with_output_schema(output_schema)
     }
     fn id(self) -> &'static str {
         match self {
@@ -170,24 +181,24 @@ impl Tool for ThreadWorkflowTool {
             call_id: context.call_id,
         };
         let hash = input.argument_hash();
-        let response = match self.kind {
+        let mut output = match self.kind {
             WorkflowOperationKind::Current
             | WorkflowOperationKind::Next
             | WorkflowOperationKind::Graph
             | WorkflowOperationKind::History => {
                 let _: EmptyInput = input.decode()?;
                 match self.kind {
-                    WorkflowOperationKind::Current => machine.current_snapshot(),
-                    WorkflowOperationKind::Next => machine.next_snapshot(),
-                    WorkflowOperationKind::Graph => machine.graph_snapshot(),
-                    WorkflowOperationKind::History => machine.history_snapshot(),
+                    WorkflowOperationKind::Current => json_output(&machine.current_snapshot()),
+                    WorkflowOperationKind::Next => json_output(&machine.next_snapshot()),
+                    WorkflowOperationKind::Graph => json_output(&machine.graph_snapshot()),
+                    WorkflowOperationKind::History => json_output(&machine.history_snapshot()),
                     WorkflowOperationKind::Transition | WorkflowOperationKind::Restart => {
                         return Err(ToolError::new(WorkflowPayloadError::GraphMismatch));
                     }
                 }
             }
-            WorkflowOperationKind::Transition => serde_json::to_value(
-                machine
+            WorkflowOperationKind::Transition => json_output(
+                &machine
                     .apply_transition(
                         input.decode()?,
                         &identity,
@@ -195,10 +206,9 @@ impl Tool for ThreadWorkflowTool {
                         crate::studio::unix_seconds(),
                     )
                     .map_err(ToolError::new)?,
-            )
-            .map_err(ToolError::new)?,
-            WorkflowOperationKind::Restart => serde_json::to_value(
-                machine
+            ),
+            WorkflowOperationKind::Restart => json_output(
+                &machine
                     .apply_restart(
                         input.decode()?,
                         &identity,
@@ -206,10 +216,8 @@ impl Tool for ThreadWorkflowTool {
                         crate::studio::unix_seconds(),
                     )
                     .map_err(ToolError::new)?,
-            )
-            .map_err(ToolError::new)?,
-        };
-        let mut output = json_output("pl.studio.workflow-result", &response)?;
+            ),
+        }?;
         let next = machine.state();
         if next != &previous {
             output = put_extension(
@@ -285,3 +293,7 @@ pub(crate) fn workflow_registrations(
     })
     .collect()
 }
+
+#[cfg(test)]
+#[path = "output_tests.rs"]
+mod tests;

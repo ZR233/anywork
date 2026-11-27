@@ -7,6 +7,7 @@
 mod input;
 mod provider_failure;
 pub(super) mod schema26_manifest;
+pub(super) mod tool_results;
 mod v25_schema;
 mod v25_to_v26;
 mod v26_to_v27;
@@ -205,7 +206,7 @@ pub(crate) async fn requires_history_upgrade(path: &Path, thread_id: &str) -> Re
         }
         SourceFormat::Schema27 => {
             schema::identity(&read, thread_id).await?;
-            schema26_manifest::repair_needed(&read).await?
+            tool_results::upgrade_needed(&read).await?
         }
     };
     read.close().await?;
@@ -227,6 +228,28 @@ pub async fn upgrade_history(
 }
 
 async fn upgrade_history_with_files(
+    history_path: &Path,
+    thread_id: &str,
+    session_dir: &Path,
+    files: UpgradeFiles,
+) -> Result<UpgradeReport> {
+    let previous = upgrade_through_schema27(history_path, thread_id, session_dir, files).await?;
+    let results = tool_results::upgrade(
+        history_path,
+        session_dir,
+        thread_id,
+        &previous.database_id,
+        files,
+    )
+    .await?;
+    Ok(if previous.status == UpgradeStatus::AlreadyCurrent {
+        results.unwrap_or(previous)
+    } else {
+        previous
+    })
+}
+
+async fn upgrade_through_schema27(
     history_path: &Path,
     thread_id: &str,
     session_dir: &Path,
@@ -1034,6 +1057,7 @@ async fn build_current(
         .map_err(|error| HistoryError::Storage(error.into()))?;
     let mut current = ThreadCurrent::new(thread_id.to_owned(), epoch);
     current.state = state;
+    crate::studio::storage::tool_result_upgrade::upgrade_pending_tool_messages(&mut current.state)?;
     current.saved_at = unix_milliseconds()?;
     current.model_call = None;
     crate::studio::producer_migration::prepare_model_current(&mut current)
@@ -1126,7 +1150,8 @@ async fn verify_saved_pending_originals(
             .ok_or_else(|| {
                 HistoryError::Integrity("resident delivery has no durable schema 24 payload".into())
             })?;
-        let durable: pl_core::thread::ToolDelivery = serde_json::from_str(&payload)?;
+        let durable =
+            crate::studio::storage::tool_result_upgrade::decode_schema24_delivery(&payload)?;
         let durable_json = serde_json::to_value(&durable)?;
         let resident_json = serde_json::to_value(resident)?;
         if durable_json != resident_json {
@@ -1154,7 +1179,13 @@ async fn verify_pending_identities(
             })?;
         let durable = decode_legacy_input_identity(&row.try_get::<String>("", "payload")?)?;
         if durable.id != input.input.id
-            || durable.digest != input.input.digest()
+            || (durable.digest != input.input.digest() && {
+                let mut legacy = input.input.clone();
+                crate::studio::storage::tool_result_upgrade::restore_opaque_for_digest(
+                    &mut legacy.context,
+                );
+                durable.digest != legacy.digest()
+            })
             || durable.purpose != input.input.purpose
             || durable.ordinal != input.ordinal
             || durable.revision != input.revision
@@ -1192,9 +1223,15 @@ async fn verify_pending_identities(
         )?;
         let digest = row.try_get::<Option<String>>("", "digest")?;
         if sequence != message.sequence
-            || digest
-                .as_deref()
-                .is_some_and(|digest| digest != message.message.digest())
+            || digest.as_deref().is_some_and(|digest| {
+                digest != message.message.digest() && {
+                    let mut legacy = message.message.clone();
+                    crate::studio::storage::tool_result_upgrade::restore_opaque_for_digest(
+                        &mut legacy.context,
+                    );
+                    digest != legacy.digest()
+                }
+            })
         {
             return Err(HistoryError::Integrity(
                 "resident inbox message differs from its durable schema 24 identity".into(),
@@ -2570,7 +2607,9 @@ async fn import_tool_tasks<C: ConnectionTrait>(
             }
             let delivery = row
                 .try_get::<Option<String>>("", "delivery_payload")?
-                .map(|payload| serde_json::from_str::<pl_core::thread::ToolDelivery>(&payload))
+                .map(|payload| {
+                    crate::studio::storage::tool_result_upgrade::decode_schema24_delivery(&payload)
+                })
                 .transpose()?;
             let turn_id = task.turn_id.clone();
             if let Some(delivery) = delivery {
@@ -2607,10 +2646,6 @@ async fn import_tool_tasks<C: ConnectionTrait>(
                         vec![call_id.clone().into()],
                     )
                     .await?;
-                if canonical.is_some() {
-                    counts.backup_only("history_tool_tasks_covered_by_original", 1);
-                    continue;
-                }
                 let delivery_id = deterministic_event_id(
                     "history_tool_tasks",
                     &[call_id.clone().into()],
@@ -2634,22 +2669,29 @@ async fn import_tool_tasks<C: ConnectionTrait>(
                     }
                     pl_core::thread::ToolDeliveryTarget::Nested { .. } => {}
                 }
-                copy_column_body(
+                if canonical.is_none() {
+                    copy_vector_body(
+                        import,
+                        &delivery_id,
+                        "canonical_payload",
+                        HistoryBodyRole::CanonicalPayload,
+                        0,
+                        serde_json::to_vec(&delivery)?,
+                    )
+                    .await?;
+                    delivery_event.payload_body_id =
+                        Some(deterministic_body_id(&delivery_id, "canonical_payload"));
+                }
+                let receipt = crate::studio::storage::tool_task::body(&task, &delivery)?;
+                copy_vector_body(
                     import,
-                    source,
-                    ColumnBodyRead {
-                        table: "history_tool_tasks",
-                        key_columns: &["call_id"],
-                        key_values: &[&call_id],
-                        column: "delivery_payload",
-                    },
                     &delivery_id,
-                    "canonical_payload",
-                    HistoryBodyRole::CanonicalPayload,
+                    &receipt.body_key,
+                    receipt.role,
+                    1,
+                    receipt.bytes.to_vec(),
                 )
                 .await?;
-                delivery_event.payload_body_id =
-                    Some(deterministic_body_id(&delivery_id, "canonical_payload"));
                 import.insert_event(delivery_event).await?;
                 counts.imported("tool_deliveries", 1);
             } else {
@@ -4276,11 +4318,10 @@ mod migration_tests {
             content_hash,
         },
         thread::{
-            ThreadLifecycle, ThreadSnapshot, ToolDelivery, ToolDeliveryTarget, ToolOutcome,
+            ThreadLifecycle, ThreadSnapshot,
             extensions::ExtensionRecord,
             task::{TaskRecord, TaskStatus},
         },
-        tool::ToolOutput,
     };
     use sea_orm::ConnectionTrait;
 
@@ -4465,14 +4506,21 @@ mod migration_tests {
             acknowledgement: None,
             started_sequence: Some(1),
         };
-        let resource_delivery = ToolDelivery {
-            target: ToolDeliveryTarget::CallResult,
-            call_id: "resource-call".into(),
-            tool_id: "resource-tool".into(),
-            output: ToolOutput::new(OpaquePayload::text("resource result"), Vec::new()),
-            delivered_context: vec![attached],
-            outcome: ToolOutcome::Succeeded,
+        let ContextContent::Media {
+            payload: attachment,
+        } = attached
+        else {
+            return Err(HistoryError::Integrity(
+                "fixture did not encode media".into(),
+            ));
         };
+        // The schema-24 writer froze an opaque producer envelope and a separate model view.
+        let resource_delivery = serde_json::json!({
+            "target": { "kind": "callResult" }, "callId": "resource-call", "toolId": "resource-tool",
+            "output": { "payload": { "format": "text/plain", "version": 1, "content": "resource result" }, "context": [] },
+            "deliveredContext": [{ "kind": "opaque", "payload": attachment }],
+            "outcome": { "kind": "succeeded" },
+        });
         db.execute_raw(statement(
             "INSERT INTO history_tool_tasks(
                 call_id,revision,task_payload,delivery_payload,last_write_seq
@@ -4743,6 +4791,7 @@ mod migration_tests {
                     text: Arc::from("cold context"),
                 }],
                 tool_calls: Vec::new(),
+                tool_data: Default::default(),
             };
             let mut state = ThreadSnapshot {
                 commit_sequence: applied,
@@ -5149,6 +5198,7 @@ mod migration_tests {
                 text: Arc::from("Preserve the saved context"),
             }],
             tool_calls: Vec::new(),
+            tool_data: Default::default(),
         };
         let state = ThreadSnapshot {
             commit_sequence: 1,
@@ -5401,6 +5451,7 @@ mod migration_tests {
                         .map_err(|error| HistoryError::Storage(error.into()))?,
                 }],
                 tool_calls: vec![binding],
+                tool_data: Default::default(),
             },
             ContextRecord {
                 id: "result-fixture".into(),
@@ -5413,6 +5464,7 @@ mod migration_tests {
                     text: "original result".into(),
                 }],
                 tool_calls: Vec::new(),
+                tool_data: Default::default(),
             },
         ];
         for (ordinal, record) in (1_i64..).zip(records) {

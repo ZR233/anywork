@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use pl_agent_tool::ToolData;
 use serde::{Deserialize, Serialize};
 
 use super::OpaquePayload;
@@ -16,6 +17,7 @@ use super::OpaquePayload;
 pub enum ContextContent {
     Text { text: Arc<str> },
     Resource { reference: ResourceReference },
+    Media { payload: OpaquePayload },
     Opaque { payload: OpaquePayload },
 }
 
@@ -121,6 +123,9 @@ pub struct ContextRecord {
     pub turn_id: Option<String>,
     pub source: ContextSource,
     pub content: Vec<ContextContent>,
+    /// Author-supplied program data, valid only for tool results.
+    #[serde(default, skip_serializing_if = "ToolData::is_absent")]
+    pub tool_data: ToolData,
     /// Framework calls emitted by this assistant record, preserved for protocol replay.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<crate::model::ModelToolCall>,
@@ -191,6 +196,8 @@ pub enum ContextError {
     RecordIdentity(String),
     #[error("tool calls require assistant attribution")]
     InvalidCallSource,
+    #[error("program data requires tool-result attribution: {0}")]
+    InvalidToolDataSource(String),
     #[error("empty or duplicate tool call identity: {0}")]
     CallIdentity(String),
     #[error("tool result does not match an outstanding call: {0}")]
@@ -232,6 +239,11 @@ impl ContextSnapshot {
             if !record.tool_calls.is_empty() && record.source != ContextSource::Assistant {
                 return Err(ContextError::InvalidCallSource);
             }
+            if !record.tool_data.is_absent()
+                && !matches!(record.source, ContextSource::ToolResult { .. })
+            {
+                return Err(ContextError::InvalidToolDataSource(record.id.clone()));
+            }
             for call in &record.tool_calls {
                 if call.call_id.is_empty()
                     || call.tool_id.is_empty()
@@ -248,5 +260,33 @@ impl ContextSnapshot {
             }
         }
         Ok(pending.into_values().cloned().collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_paired_tool_results_can_carry_program_data() {
+        let record: ContextRecord = serde_json::from_value(serde_json::json!({
+            "id": "user",
+            "source": { "kind": "user" },
+            "content": [],
+        }))
+        .unwrap();
+        assert!(record.tool_data.is_absent());
+        let mut snapshot = ContextSnapshot {
+            revision: 1,
+            records: vec![record].into(),
+        };
+        assert_eq!(snapshot.validate_complete(), Ok(()));
+
+        Arc::make_mut(&mut snapshot.records)[0].tool_data =
+            ToolData::Value(serde_json::Value::Null);
+        assert_eq!(
+            snapshot.validate_complete(),
+            Err(ContextError::InvalidToolDataSource("user".into()))
+        );
     }
 }

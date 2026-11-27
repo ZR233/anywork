@@ -27,6 +27,10 @@
 
 ### 工具调用身份
 
+工具结果使用 [09](./09-tool-runtime.md#91-工具身份所有权与历史落盘栅栏) 的同一作者结果。普通 Responses、Chat Completions 与 Gemini 调用读取 `content`；托管程序调用读取配对工具记录中的 `tool_data`。明确的媒体类别才进入媒体解码与资源验证，普通 Opaque 不能因内容恰好可解析就成为附件。历史缺少程序值时不从正文补造。
+
+Responses 托管调用需要对象载体，使用 `{"data": <作者值>}` 并配套输出声明；调用未提供值或旧历史未记录值时，使用声明中的 `tool_data_unavailable` 错误分支，保留公开诊断。作者 schema 作为独立的 JSON Schema 2020-12 资源嵌入，局部引用仍指向作者根；不兼容方言、缺失引用基准或冲突资源身份在请求准备时失败，不能用任意对象声明掩盖差异。未声明程序返回 schema 的工具不虚报托管调用资格。
+
 完成模块内部的流状态机负责生成稳定的工具调用身份。工具调用一经解码即具备必填的双重标识（条目标识 `item_id` 与调用标识 `call_id`）：
 - **Responses 协议**：直接使用事件携带的 `item_id` 与 `call_id`，两者同时缺失视为协议错误。由于 Responses 可能先下发仅含上游 `item_id` 的 `output_item.added` 事件，在后续增量或完成事件中才补齐独立的 `call_id`，因此同一工具调用一旦通过任一非空标识进入累积器，后续迟到的元数据必须原地升级该累积器并归并至同一未闭合的工具调用中，严禁拆分为第二个工具调用或第二个模型成员。
 - **Chat Completions 协议**：按分块索引（chunk index）确定性构造流内标识与 `item_id`，并令 `call_id = item_id`。系统不存在可选的 `call_id` 或将两个标识互作回退的归一化路径。
@@ -57,13 +61,15 @@ Gemini 工具参数在流解码、公开回放和出站请求中均须为 JSON �
 
 公开 API 按五个稳定领域模块组织：`completion`、`config`、`model`、`protocol`、`runtime`。认证协议和身份类型由独立的 `pl-model-auth::chatgpt` 提供。消费方统一通过领域模块前缀访问类型；crate 根模块仅重导出基础错误类型与 `Result`，确保同一公开接口仅有一条规范导入路径。各领域模块精确重导出其公共签名中直接引用的 `pl-protocol` 类型，使消费方仅依赖 `pl-model` 即可完整命名公开签名，同时禁止与公共签名无关的成套镜像转发。
 
-工具作者声明来自 `pl-agent-tool`，唯一模型投影为 `completion::tool_definition_to_spec`：完整 `ToolDefinition` 与宿主显式的 `ToolCallPolicy` 转成现有 `ToolSpec`，再经原运行时声明编码进入 core。`ToolSpec` 是模型投影 DTO，保留 Function、Custom、programmatic 与 provider-hosted 线协议形状，不再承担另一套作者构造入口。`DirectOnly` 保持空 `allowed_callers`；`DirectAndProgrammatic` 显式声明 Direct 与 Programmatic 两类 caller，并仅在未提供输出 schema 时使用原有开放对象输出。两种策略对 Function 与 Custom 一致，不授予执行权限；托管工具不经过作者投影，也不生成本地占位执行器。
+工具作者声明来自 `pl-agent-tool`，唯一模型投影为 `completion::tool_definition_to_spec`：完整 `ToolDefinition` 与宿主显式的 `ToolCallPolicy` 转成现有 `ToolSpec`，再经原运行时声明编码进入 core。`ToolSpec` 是模型投影 DTO，保留 Function、Custom、programmatic 与 provider-hosted 线协议形状，不再承担另一套作者构造入口。`DirectOnly` 保持空 `allowed_callers`；`DirectAndProgrammatic` 只有在作者提供真实输出 schema 时才声明 Direct 与 Programmatic 两类 caller，缺声明时不授予托管程序调用资格，也不补开放对象 schema。两种策略对 Function 与 Custom 一致，不授予执行权限；托管工具不经过作者投影，也不生成本地占位执行器。
 
-Responses Function 声明显式发送 `strict: false`，保留可选参数与角色分支约束，避免服务端自动严格化改变参数语义；HTTP 与 WebSocket 使用同一编码。作者 schema 与 Grammar 字节保持完整；供应商所需的根标题/方言修剪、对象联合投影及 strict 限制只作用于实际请求，不改写冻结声明或统一强制拒绝额外字段。模型继续拥有 Custom 原生/Function 回退与原始参数恢复。此次 Rust 接口抽取沿用 `pl.model.tool-spec`、工具结果、checkpoint 与历史 codec，不增加存储版本或重放当前工具的兼容分支。
+Responses Function 声明显式发送 `strict: false`，保留可选参数与角色分支约束，避免服务端自动严格化改变参数语义；HTTP 与 WebSocket 使用同一编码。作者 schema 与 Grammar 字节保持完整；供应商所需的根标题/方言修剪、对象联合投影及 strict 限制只作用于实际请求，不改写冻结声明或统一强制拒绝额外字段。模型继续拥有 Custom 原生/Function 回退与原始参数恢复。`pl.model.tool-spec` 沿用声明编码；工具结果与历史的存储迁移遵循 [17](./17-studio-storage.md)，不通过重放当前工具补历史字段。
 
-所有厂商的出站工具输入声明共用精简投影，ChatGPT 会话路由也复用同一规则：只保留参数形状、说明、引用与必要约束，删除生成器标题、方言声明、默认值、示例与内部扩展字段，并裁掉未引用的本地定义。闭合对象联合的分支引用父级公共参数定义，只发送允许的参数名、不同限制与额外必填项；禁止的参数从可用参数表移除，仍由分支对象闭合拒绝，不再重复整份参数 schema 或发送布尔属性 schema。其他布尔 schema 在必要处转为对象形式。枚举/常量中的 JSON 实例不递归当成 schema 改写。完整作者声明、冻结上下文与宿主 Profile / 权限校验保持原状；Custom/Grammar 原生表示及必要的 Function 回退沿用原协议适配。子智能体创建的内部 metadata 不进入模型参数声明。直接工具调用不携带输出 schema，托管编程式调用所需的输出声明遵循下一段契约。此设计对照本地 Codex 的独立 API 工具表示与 schema 清理边界；xAI 对布尔属性 schema 的拒绝见 [JSON Schema support](https://docs.x.ai/developers/model-capabilities/text/structured-outputs#json-schema-support)。
+所有厂商的出站工具输入声明共用精简投影，ChatGPT 会话路由也复用同一规则：只保留参数形状、说明、引用与必要约束，删除生成器标题、方言声明、默认值、示例与内部扩展字段，并裁掉未引用的本地定义。闭合对象联合的分支引用父级公共参数定义，只发送允许的参数名、不同限制与额外必填项；禁止的参数从可用参数表移除，仍由分支对象闭合拒绝，不再重复整份参数 schema 或发送布尔属性 schema。其他布尔 schema 在必要处转为对象形式。枚举/常量中的 JSON 实例不递归当成 schema 改写。完整作者声明、冻结上下文与宿主 Profile / 权限校验保持原状；Custom/Grammar 原生表示及必要的 Function 回退沿用原协议适配。子智能体创建的内部 metadata 不进入模型参数声明。仅允许直接调用的工具声明不携带输出 schema；允许托管编程式调用的声明可同时供普通调用使用，其输出载体遵循下文契约。此设计对照本地 Codex 的独立 API 工具表示与 schema 清理边界；xAI 对布尔属性 schema 的拒绝见 [JSON Schema support](https://docs.x.ai/developers/model-capabilities/text/structured-outputs#json-schema-support)。
 
-Responses 的工具输出声明与实际交给模型的内容必须一致：工具作者和 MCP 的原始输出 schema 仍保存在冻结声明中，但模型上下文可能包含多段文本、截断提示或工具错误，不能保证符合原始 schema。仅支持直接调用的工具不向 Responses 声明输出 schema，其结果保留原文；支持供应商托管编程式调用的工具仍需声明开放对象，并将其结果编码为包含 JSON 对象的字符串。已是 JSON 对象时保留原文，其他 JSON 值和普通文本放在对象的 `content` 字段中；带编程式 caller 的历史结果也按此编码。历史重放按当前请求的工具声明重新投影，仅改变出站表示，不更改会话事实，也不重复执行工具。
+Responses 的工具输出声明与实际载体必须一致。按配对调用的真实 caller 选择结果：普通调用使用保存的作者 `content`，托管编程式调用使用保存的真实 `data`，明确编码为 `{"data": authorValue}`；工具具备托管资格不能把普通调用改为返回程序值。作者 schema 描述该 `data` 的实际类型，协议外层同时声明缺值分支 `{"error":{"code":"tool_data_unavailable","message":...}}`；没有程序值的调用或历史记录走此分支，不反解正文补值。作者输出 schema 以 draft 2020-12 独立资源嵌入，保留局部引用、递归根和合法绝对资源身份；嵌套资源按实际基准 URI 解析后检查身份冲突，不能改成任意对象。历史回放仍按保存的真实 caller 选择内容或程序值，当前目录资格变化不改变作者语义，不改写历史正文，也不重复执行工具。
+
+同一 Function 声明可以允许普通与托管调用，并带有 `output_schema`。[Responses 官方契约](https://developers.openai.com/api/reference/resources/responses/methods/create)规定，这个 schema 只描述字符串输出中编码的 JSON，不描述内容数组。该情况下普通调用使用 `input_text` 等合法内容数组保留作者内容，托管调用使用声明一致的 JSON 字符串；不能把普通正文直接当作符合 schema 的字符串，也不能按 caller 豁免字符串校验。协议编码不从正文推导程序值，媒体仍沿类型化内容及来源关联交付。本地协议替身保留非法 JSON 字符串拒绝，并覆盖内容数组及同一声明的两类调用；替身通过不等于真实供应商已接受。
 
 ## 6.3 模型能力矩阵
 

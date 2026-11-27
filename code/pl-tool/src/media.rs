@@ -7,6 +7,15 @@ pub use pl_tool_media_support::{
 };
 use std::sync::Arc;
 
+pub(crate) fn resource_reference_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type":"object", "properties": {
+            "id":{"type":"string"},"contentDigest":{"type":"string"},
+            "byteLen":{"type":"integer","minimum":0},"mediaType":{"type":"string"}
+        },"required":["id","contentDigest","byteLen","mediaType"],"additionalProperties":false,
+    })
+}
+
 /// Durable material and the actual model-visible media projection selected by the host.
 #[derive(Debug)]
 pub struct RetainedToolMedia {

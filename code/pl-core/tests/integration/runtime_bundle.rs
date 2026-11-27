@@ -341,8 +341,8 @@ impl pl_agent_tool::Tool for CommandTool {
             }
             Self::Write(target) => target.notify_one(),
         }
-        Ok(ToolOutput::new(
-            input,
+        Ok(ToolOutput::from_data(
+            serde_json::Value::String(input.content().to_owned()),
             vec![support::text("original output")],
         ))
     }
@@ -461,7 +461,7 @@ async fn revoked_authority_cancels_the_old_task_and_waits_for_its_exit() {
         delivery.tool_id == "command"
             && delivery
                 .output
-                .context()
+                .content()
                 .contains(&support::text("original output"))
     }));
     thread.close().await.unwrap();
@@ -502,6 +502,7 @@ async fn reconfiguration_binds_instructions_to_the_version_assigned_after_concur
             records: vec![ContextRecord {
                 id: "projected".into(),
                 turn_id: None,
+                tool_data: Default::default(),
                 tool_calls: Vec::new(),
                 source: ContextSource::InstructionSnapshot {
                     revision: 0,

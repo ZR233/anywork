@@ -7,7 +7,6 @@ use pl_agent_tool::{
     Tool,
     typed::{self, ArgumentError, InvocationError, JsonAdapter, PreparedJson},
 };
-use pl_core::context::ContextContent;
 pub use pl_core::{
     context::OpaquePayload,
     model::ModelError,
@@ -56,12 +55,22 @@ fn native_error(error: InvocationError<ToolError>) -> ToolError {
     }
 }
 
+pub(crate) fn program_schema<T: schemars::JsonSchema>() -> serde_json::Value {
+    schemars::generate::SchemaSettings::draft2020_12()
+        .for_serialize()
+        .into_generator()
+        .into_root_schema_for::<T>()
+        .to_value()
+}
+
 pub struct PreparedNativeTool<T: TypedTool> {
     inner: PreparedJson<T>,
+    output_definition: Option<ToolDefinition>,
 }
 
 pub struct NativeTool<T: TypedTool> {
     inner: JsonAdapter<T, OpaquePayload>,
+    output_definition: Option<ToolDefinition>,
 }
 
 pub fn prepare_native_tool<T>() -> Result<PreparedNativeTool<T>, DefinitionError>
@@ -70,6 +79,7 @@ where
 {
     Ok(PreparedNativeTool {
         inner: typed::prepare_json()?,
+        output_definition: None,
     })
 }
 
@@ -78,12 +88,24 @@ where
     T: TypedTool<Output = ToolOutput, Error = ToolError>,
 {
     pub fn definition(&self) -> &ToolDefinition {
-        self.inner.definition()
+        self.output_definition
+            .as_ref()
+            .unwrap_or_else(|| self.inner.definition())
+    }
+
+    /// Declares this author's program data when the Rust output is already a ToolOutput.
+    pub fn with_output_schema(
+        mut self,
+        schema: serde_json::Value,
+    ) -> Result<Self, DefinitionError> {
+        self.output_definition = Some(self.inner.definition().clone().with_output_schema(schema)?);
+        Ok(self)
     }
 
     pub fn attach(self, tool: T) -> NativeTool<T> {
         NativeTool {
             inner: self.inner.attach_input(tool, core_json_text),
+            output_definition: self.output_definition,
         }
     }
 }
@@ -98,7 +120,9 @@ where
     type Error = ToolError;
 
     fn definition(&self) -> &ToolDefinition {
-        self.inner.definition()
+        self.output_definition
+            .as_ref()
+            .unwrap_or_else(|| self.inner.definition())
     }
 
     async fn execute(
@@ -273,16 +297,13 @@ where
             .execute(input, (self.map_context)(context))
             .await
             .map_err(|error| self.map_error(error))?;
-        let text = serde_json::to_string(&output).map_err(|source| {
+        let value = serde_json::to_value(output).map_err(|source| {
             ToolError::new(JsonOutputError {
                 tool: self.definition().name().to_owned(),
                 source,
             })
         })?;
-        Ok(ToolOutput::new(
-            OpaquePayload::new("application/json", 1, text.clone()).map_err(ToolError::new)?,
-            vec![ContextContent::Text { text: text.into() }],
-        ))
+        Ok(ToolOutput::json(value))
     }
 
     async fn close(&self) -> Result<(), ToolError> {

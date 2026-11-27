@@ -1,32 +1,12 @@
-//! Host history envelopes, task receipt identity and typed host-error mapping.
-use pl_core::{
-    context::{ContextContent, OpaquePayload, ResourceReference},
-    tool::{ToolOutput, opaque::ToolError},
-};
+//! Task receipt identity, resource references and typed host-error mapping.
+use pl_core::tool::{ToolOutput, opaque::ToolError};
 use serde::Serialize;
-use std::sync::Arc;
 
 pub(super) fn current_receipt(context: &crate::invocation::WorkspaceInvocation) -> Option<String> {
     context
         .tasks
         .as_ref()
         .and_then(|tasks| tasks.current_receipt())
-}
-
-pub(super) fn archived_output(
-    text: String,
-    resources: &[(crate::command::CommandCaptureStream, ResourceReference)],
-) -> Result<ToolOutput, ToolError> {
-    let payload = OpaquePayload::new("pl.tool.exec", 2, text.clone()).map_err(ToolError::new)?;
-    let mut content = vec![ContextContent::Text {
-        text: Arc::from(text),
-    }];
-    for (_, reference) in resources {
-        content.push(ContextContent::Resource {
-            reference: reference.clone(),
-        });
-    }
-    Ok(ToolOutput::new(payload, content))
 }
 
 fn prefix(text: &str, mut bytes: usize) -> &str {
@@ -37,14 +17,17 @@ fn prefix(text: &str, mut bytes: usize) -> &str {
     &text[..bytes]
 }
 
-pub(super) fn stdin_unavailable(target: &crate::invocation::CommandTask) -> ToolError {
+pub(super) fn stdin_unavailable(
+    task_id: Option<String>,
+    target: &crate::invocation::CommandTask,
+) -> ToolError {
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     struct Receipt<'a> {
+        task_id: Option<String>,
         target_task_id: &'a str,
         status: pl_core::thread::task::TaskStatus,
-        accepted_bytes: u64,
-        delivery_pending: bool,
+        input_receipt: serde_json::Value,
         diagnostic: StdinDiagnostic,
     }
     #[derive(Serialize)]
@@ -54,10 +37,10 @@ pub(super) fn stdin_unavailable(target: &crate::invocation::CommandTask) -> Tool
         next_action: &'static str,
     }
     let receipt = Receipt {
+        task_id,
         target_task_id: &target.task_id,
         status: target.status,
-        accepted_bytes: 0,
-        delivery_pending: false,
+        input_receipt: serde_json::json!({"acceptedBytes": 0, "outcome": "notSent"}),
         diagnostic: StdinDiagnostic {
             code: if target.tool_id == super::TOOL_EXEC {
                 "exec.stdin_closed"
@@ -67,9 +50,7 @@ pub(super) fn stdin_unavailable(target: &crate::invocation::CommandTask) -> Tool
             next_action: "inspect_original_exec_do_not_restart",
         },
     };
-    let output = serde_json::to_string(&receipt)
-        .map_err(ToolError::new)
-        .and_then(|text| receipt_output("pl.tool.stdin", text));
+    let output = serde_json::to_value(&receipt).map(ToolOutput::json);
     let error = ToolError::new(super::ExecFailure::TaskUnavailable {
         task_id: target.task_id.clone(),
         status: target.status,
@@ -77,7 +58,7 @@ pub(super) fn stdin_unavailable(target: &crate::invocation::CommandTask) -> Tool
     });
     match output {
         Ok(output) => error.with_output(output),
-        Err(error) => error,
+        Err(error) => ToolError::new(error),
     }
 }
 
@@ -104,12 +85,10 @@ pub fn permission_denied(source: impl std::error::Error + Send + Sync + 'static)
         },
         process_started: false,
     };
-    let output = serde_json::to_string(&receipt)
-        .map_err(ToolError::new)
-        .and_then(|text| receipt_output("pl.tool.exec", text));
+    let output = serde_json::to_value(&receipt).map(ToolOutput::json);
     match output {
         Ok(output) => ToolError::new(source).with_output(output),
-        Err(error) => error,
+        Err(error) => ToolError::new(error),
     }
 }
 
@@ -131,7 +110,6 @@ pub(super) fn start_error(
         detail: &'a str,
         next_action: &'static str,
     }
-    let cancelled = matches!(error.failure, crate::command::CommandRunFailure::Cancelled);
     let detail = error.to_string();
     let receipt = StartReceipt {
         task_id: current_receipt(context),
@@ -149,27 +127,10 @@ pub(super) fn start_error(
             },
         },
     };
-    let output = serde_json::to_string(&receipt)
-        .map_err(ToolError::new)
-        .and_then(|text| receipt_output("pl.tool.exec", text));
-    let error = if cancelled {
-        ToolError::new(pl_core::thread::ThreadError::Cancelled)
-    } else {
-        ToolError::new(error)
-    };
+    let output = serde_json::to_value(&receipt).map(ToolOutput::json);
+    let error = ToolError::new(error);
     match output {
         Ok(output) => error.with_output(output),
-        Err(error) => error,
+        Err(error) => ToolError::new(error),
     }
-}
-
-/// Metadata-only receipts do not consume the stdout/stderr body budget.
-pub(super) fn receipt_output(format: &'static str, text: String) -> Result<ToolOutput, ToolError> {
-    let payload = OpaquePayload::new(format, 2, text.clone()).map_err(ToolError::new)?;
-    Ok(ToolOutput::new(
-        payload,
-        vec![ContextContent::Text {
-            text: Arc::from(text),
-        }],
-    ))
 }

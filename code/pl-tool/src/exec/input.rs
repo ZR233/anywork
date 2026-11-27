@@ -14,9 +14,9 @@ impl ExecInputError {
     pub fn into_tool_error(self) -> ToolError {
         match self
             .0
-            .diagnostic_json()
+            .diagnostic_data()
             .map_err(ToolError::new)
-            .and_then(|text| super::output::receipt_output("pl.tool.exec", text))
+            .map(pl_core::tool::ToolOutput::json)
         {
             Ok(output) => ToolError::new(self).with_output(output),
             Err(error) => error,

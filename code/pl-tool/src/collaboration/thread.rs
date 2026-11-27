@@ -295,7 +295,9 @@ impl AgentControlKind {
                 "send_message",
                 "Send a prompt to a direct child. Interrupt its active turn and continue with this message after tool cleanup; start it if idle. The receipt confirms acceptance, not completion.",
                 pl_agent_tool::typed::input_schema_for::<SendInput>(),
-            ).expect("valid tool definition"),
+            ).expect("valid tool definition")
+                .with_output_schema(crate::binding::program_schema::<AgentSendResult>())
+                .expect("static send message schema"),
             Self::List => pl_agent_tool::ToolDefinition::json(
                 "list_agents",
                 "List agents visible within the caller's thread tree.",
@@ -305,7 +307,9 @@ impl AgentControlKind {
                 "interrupt_agent",
                 "Pause queued execution and interrupt a descendant agent's active turn.",
                 pl_agent_tool::typed::input_schema_for::<Target>(),
-            ).expect("valid tool definition"),
+            ).expect("valid tool definition")
+                .with_output_schema(crate::binding::program_schema::<AgentInterruptResult>())
+                .expect("static interrupt result schema"),
             Self::Close => pl_agent_tool::ToolDefinition::json(
                 "close_agent",
                 "If you are a Native root retiring a direct Native child after final acceptance, call evaluate_agent separately and check its successful receipt before calling close_agent. Permanently close a descendant and its descendants: stop and join execution, tools and processes, await existing save acknowledgements, and remove only each child's own existing bound Git worktree. Full history, checkpoints, reliable attachments, reports, statistics, evaluations, independent session files and branch refs are retained. Finish review and integration first; otherwise keep it idle or interrupt it. By default dirty/untracked changes or a child HEAD not contained in the actual root delivery HEAD block worktree cleanup. force=true permits discarding only that content, never bypassing ownership, Git identity or locks, active borrowers, process exit or save acknowledgements. The result reports executionClosed and worktreeCleanup per agent; partial failure retains all member facts and may be retried only against the original binding.",
@@ -483,12 +487,7 @@ impl<H: AgentControlHost, C: AgentToolContext> pl_agent_tool::Tool for ThreadAge
 struct CloseIncomplete(pl_protocol::StateError);
 
 fn output(value: impl serde::Serialize) -> Result<ToolOutput, ToolError> {
-    let encoded = serde_json::to_string(&value).map_err(ToolError::new)?;
-    Ok(ToolOutput::new(
-        OpaquePayload::new("pl.studio.agent-control", 1, encoded.clone())
-            .map_err(ToolError::new)?,
-        vec![pl_core::context::ContextContent::Text {
-            text: Arc::from(encoded),
-        }],
-    ))
+    serde_json::to_value(value)
+        .map(ToolOutput::json)
+        .map_err(ToolError::new)
 }

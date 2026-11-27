@@ -50,6 +50,7 @@ impl Owner {
                     tool_id: task.tool_id.clone(),
                 },
                 content,
+                tool_data: Default::default(),
                 tool_calls: Vec::new(),
             },
         )
@@ -82,23 +83,26 @@ impl Owner {
         {
             let belongs_to_batch = batch.waiting.remove(&id);
             if belongs_to_batch
-                && let Ok(output) = &result
+                && let Ok(completion) = &result
+                && let Some(output) = completion.successful_output()
                 && output.control() != crate::tool::ToolControl::Continue
             {
                 batch.control = Some(output.control());
             }
         }
         if let Some(super::execution::ToolWaiter { reply, .. }) = self.tool_waiters.remove(&id) {
-            let _ = reply.send(result.map(ToolDispatch::Completed));
+            let _ = reply.send(
+                result
+                    .and_then(ToolCompletion::into_result)
+                    .map(ToolDispatch::Completed),
+            );
             return;
         }
         if let Some(reply) = self.nested_replies.remove(&id) {
             let _ = reply.send(result);
             return;
         }
-        if let Err(error) = result
-            && !matches!(error, ThreadError::Tool(_) | ThreadError::Cancelled)
-        {
+        if let Err(error) = result {
             tracing::error!(thread = self.id, %error, "background result commit failed");
         }
     }
@@ -107,7 +111,6 @@ impl Owner {
 pub(super) fn append_result_message(
     state: &mut ThreadSnapshot,
     task: &task::TaskRecord,
-    output: &crate::tool::ToolOutput,
     context: Vec<ContextContent>,
 ) -> Result<String, ThreadError> {
     // The bounded identity ledger is not an allocator: old IDs remain durable after pruning.
@@ -118,15 +121,22 @@ pub(super) fn append_result_message(
         kind: crate::context::AgentMessageKind::Report,
         id: id.clone(),
         source_id: task.id.clone(),
-        payload: output.payload().clone(),
+        payload: result_message_reference(&task.call_id)?,
         context,
     };
     inbox::admit_message(state, message)?;
     Ok(id)
 }
 
+/// The durable ToolDelivery owns the complete author result for this call.
+pub(super) fn result_message_reference(call_id: &str) -> Result<OpaquePayload, ThreadError> {
+    OpaquePayload::new("pl.core.tool-result-reference", 1, call_id)
+        .map_err(|_| ThreadError::InvalidIdentity)
+}
+
 pub(super) fn result_context(
-    task: &task::TaskRecord,
+    task_id: &str,
+    tool_id: &str,
     status: task::TaskStatus,
     mut content: Vec<ContextContent>,
 ) -> Vec<ContextContent> {
@@ -134,8 +144,7 @@ pub(super) fn result_context(
         0,
         ContextContent::Text {
             text: Arc::from(format!(
-                "Task {} for tool {} finished: {status:?}.",
-                task.id, task.tool_id
+                "Task {task_id} for tool {tool_id} finished: {status:?}."
             )),
         },
     );

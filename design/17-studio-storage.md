@@ -282,7 +282,9 @@ Thread 本地摘要在受理后即可显示，总览只采用已经保存并进�
 
 `ConversationStore` 只负责当前产品绑定、允许真正发布的事实进入对应端口，并保留执行与读取责任；它不把持久化历史复制成第二份完成集合。`PreparedEffect` 携带当前 State、typed Turn/Source 变化、History 事件与 `retained_resources`。`retained_resources` 只记录本 effect 中真实 delivery 或 delivery repair 的资源引用及可缺省的 `turn_id`，不复制 `latestTask` 或另建 `history_tool_tasks` 事实。
 
-工具的完整结果随最终工具原件保存。`get_tool_task` 从任务编号取得调用编号，按对应的原件事件标识回读。后台完成的工具结果虽然在时间线中归入收件箱消息，仍可按原任务编号分页读取。
+工具的完整作者结果与真实完成状态一起保存，后续状态发布不得以缺失正文覆盖已有完成事实。`get_tool_task` 按原任务编号或内部调用编号读取同一原件；后台完成虽在时间线中归入收件箱消息，仍保留原任务身份。Core 的完成缓存有界，读取依次使用仍在内存中的完成事实、可靠 effect 窗口及已附着的 `HistorySink`；原 History owner 负责排队交接和冷历史读取。缓存淘汰和关闭重开不触发业务重执行，回读失败不伪装成空结果。
+
+作者的 `data`、`content`、`details` 与实际 `delivered_context` 分别保留其含义。实际交付等于作者内容时可以共享材料或省略等价字段，显式空交付仍是空。后台通知使用带原调用身份的结果引用，不再复制完整作者结果。命令完整双流资源从作者的 `details.command` 接入既有资源保留责任，不要求将内部捕获引用放进模型内容。
 
 Current writer 与 History writer 从同一已准备业务批次取得各自需要的事实后分别保存。History writer 先接纳完整原子事件批次，再由现有通道 flush 到 schema 27；Current writer 的周期捕获与覆盖写不由 History flush 确认。任一 writer 失败都保留自己的 dirty/pending 和错误，不能通过关闭另一个 writer 或丢弃资源引用制造成功。
 
@@ -773,7 +775,7 @@ schema 25 到 26 的升级同样在会话独占维护阶段完成，不启动模
    - `run_*`、`turn_*`、`source_*`、`usage_*`、`background_delivery_recorded` 与 `business_changed` 记为 `timeline_role = 'hidden'`，保留业务 `row_scope`/`row_key`/`is_anchor` 并将其元信息提升到 `payload_json`。
 3. **索引重建与校验提交**：替换旧 `history_events`，创建 `idx_events_dividers`、`idx_events_work`、`idx_events_call` 等全部 schema 26 索引与只追加触发器，更新 `history_store_meta.schema_version = 26` 并登记迁移版本；执行 `PRAGMA foreign_key_check` 确认无悬空引用后提交事务，失败则完整回滚并保留原库与备份。
 
-正文清单在写入或升级时收录账单 `accounting` 和工具任务 `native.tool-task.v1`。已落库的 schema 26 在相同的独占维护入口按 `seq` 分批补齐清单，保留事件、正文引用和块身份。该维护与只追加触发器的恢复在同一个 SQLite `IMMEDIATE` 事务提交。历史库用 `PRAGMA user_version` 记录维护修订：`0` 尚未补齐清单，`1` 已补齐清单，`2` 同时完成下述失败载荷迁移。新建库直接使用修订 `2`；旧库必须完成对应维护后才登记修订，不能只更新版本。正常读取使用当前载荷和清单定位正文。
+此阶段的正文清单收录账单 `accounting` 和旧工具任务 `native.tool-task.v1`。已落库的 schema 26 在相同的独占维护入口按 `seq` 分批补齐清单，保留事件、正文引用和块身份。该维护与只追加触发器的恢复在同一个 SQLite `IMMEDIATE` 事务提交。历史库用 `PRAGMA user_version` 记录维护修订：`0` 尚未补齐清单，`1` 已补齐清单，`2` 同时完成下述失败载荷迁移。旧库必须完成对应维护后才登记修订，不能只更新版本。当前新建库和工具结果格式按 §17.24 使用修订 `3`。
 
 ### 失败载荷的维护修订 2
 
@@ -795,3 +797,19 @@ schema 26 到 27 在相同独占维护入口执行零拷贝原地转换（旧 v2
    - 以单条 `INSERT INTO history_events_v27 SELECT ... ORDER BY seq ASC` 无损迁移全量事件行，核对行数一致后替换 `history_events`；
    - 建立精简后的 12 个稀疏部分索引（`idx_events_boundaries(seq DESC) WHERE timeline_role = 2`、`idx_events_work(seq DESC) WHERE timeline_role = 1`、`history_one_anchor`、`history_row_head`、`history_business_anchors`、`idx_events_entity`、`idx_events_turn`、`idx_events_source(source_id, seq DESC)`、`idx_events_call`、`idx_events_originals_all(seq DESC, query_class)`、`idx_events_originals_parent(parent_id, seq DESC, query_class) WHERE query_class IS NOT NULL AND parent_id IS NOT NULL`、`idx_events_originals_text`），删除冗余的 `idx_events_message`、`idx_events_attempt`、`idx_events_originals_class`、`idx_events_originals_parent_class`、`idx_events_originals_tool`；
    - 重建只追加触发器与 `history_store_meta (schema_version = 27)`，执行 `PRAGMA foreign_key_check` 后提交；任何校验失败完整回滚并保留原库与备份。
+
+## 17.24 工具结果维护修订 3
+
+统一作者结果不改变 History 表结构，数据库保持 schema `27`，完成本次维护后将 `PRAGMA user_version` 登记为 `3`。新建库直接创建当前格式。工具完整原件正文键为 `native.tool-task.v2`，读取器不再接受旧结果信封。
+
+原件同时保存框架实际终态、作者结果与当时交付内容。取消覆盖原调用失败时，delivery 的可选 `cancellationCause` 沿已有错误编码保留原种类和安全诊断；Current 与旧 checkpoint 导入的分片重建同样透传该事实，旧记录缺失时保持缺失。明确为空的交付内容不由作者正文补齐。读取完整正文时校验全部分片布局、精确长度及摘要，不以截取声明范围后摘要相同掩盖额外尾部字节或块。
+
+对含旧结果的库，原维护所有者先取得 `WriterLease`，核对库身份，并在 `migration-backups/history-27-tool-result` 发布和同步完整逻辑备份。具名迁移在一个 SQLite `IMMEDIATE` 事务中转换旧工具原件、后台 delivery 与受影响的产品 artifact，更新对应正文清单和引用，并恢复只追加触发器后登记修订。没有旧材料的库经检查后登记当前修订；任何转换或校验失败都保留原库与备份，不清空数据，也不把失败当作已完成维护。
+
+旧结果的完整业务载荷以 `details.legacyPayload` 保留，旧任务查询 artifact 以 `legacyToolTask` 保留。迁移只解释已识别的旧契约；未记录的程序值保持缺失，不从历史模型正文猜出 `data`。文件展示回执迁入直接的 `fileDisplay` 对象。原正文、媒体字节、任务和调用身份保持可追溯，模型当时实际收到的内容不能由新 renderer 改写。
+
+Current 中的 Core `ThreadCurrent` 使用 schema `2`，在正式 Current 升级边界转换旧结果与明确可识别的媒体，同时将收件箱通知转换为指向同一 delivery 的结果引用。调用身份重定位时同步重定位该引用，任务和消息身份保持不变。Current 与 History 仍各自承担保存与失败责任，本次维护不建立共同事务或共同保存水位。
+
+明确恢复入口在首次严格读取 Current 前，经原 `ThreadPersistenceCoordinator` 取得与 Current writer 注册共用的维护准入。目录规范化与物理身份校验复用原注册规则；已有 writer 必须由原所有者完成关闭、join 和释放后才能升级旧文件，维护方不强制关闭活跃执行，也不伪造运行 epoch。当前版与缺失文件不改写。旧版转换先在 `migration-backups/current-tool-result-v1/current.original.json` 保存精确原字节，再原子发布新文件；已有备份必须与本次原件一致。备份和发布直到同步落盘完成都持有准入，失败保留原件与备份供显式重试。普通只读查询仍不迁移、不激活执行。
+
+旧 checkpoint 的具名导入边界使用编码版本 `7`，用于表示统一作者结果、程序值和明确媒体；版本 `1` 至 `6` 只在该迁移边界转换。该编码属于旧会话导入材料，不重新引入正常运行的 checkpoint 保存或恢复路径。

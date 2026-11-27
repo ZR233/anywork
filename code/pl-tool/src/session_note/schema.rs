@@ -57,6 +57,44 @@ impl SessionNoteToolKind {
         }
     }
 
+    pub fn output_schema(self) -> Value {
+        use serde_json::json;
+        let line = json!({"type":"integer","minimum":1});
+        let count = json!({"type":"integer","minimum":0});
+        let text = json!({"type":"string"});
+        let mut properties = match self {
+            Self::Read => json!({
+                "totalBytes": count, "totalLines": count, "startLine": line, "endLine": count,
+                "nextStartLine": {"type":["integer","null"], "minimum":1}, "text": text,
+            }),
+            Self::Search => {
+                let context = json!({"type":"array","items":{
+                    "type":"object","properties":{"line":line,"text":text},
+                    "required":["line","text"],"additionalProperties":false
+                }});
+                json!({
+                    "query": text, "count": count, "nextCursor": {"type":["string","null"]},
+                    "matches":{"type":"array","items":{
+                        "type":"object","properties":{"line":line,"column":line,"text":text,"before":context,"after":context},
+                        "required":["line","column","text","before","after"],"additionalProperties":false
+                    }},
+                })
+            }
+            Self::Write | Self::ApplyPatch => json!({
+                "status": {"enum":["written","patched","unchanged"]},
+                "totalBytes": count, "totalLines": count,
+            }),
+        };
+        properties["revision"] = count;
+        properties["contentHash"] = text;
+        let required = properties
+            .as_object()
+            .expect("note properties are an object")
+            .keys()
+            .collect::<Vec<_>>();
+        json!({"type":"object","properties":properties,"required":required,"additionalProperties":false})
+    }
+
     pub const fn supports_parallel_tool_calls(self) -> bool {
         matches!(self, Self::Read | Self::Search)
     }

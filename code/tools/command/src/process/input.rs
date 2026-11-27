@@ -1,6 +1,34 @@
 //! Strict command-input diagnostics, independent of host error and history types.
 use serde::{Serialize, de::DeserializeOwned};
 
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct InputDiagnostic<'a> {
+    code: &'a str,
+    stage: &'static str,
+    field: Option<&'a str>,
+    detail: &'a str,
+    line: Option<usize>,
+    column: Option<usize>,
+    next_action: &'static str,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct InputRejection<'a> {
+    diagnostic: InputDiagnostic<'a>,
+    process_started: bool,
+}
+
+pub(crate) fn input_rejection_schema() -> serde_json::Value {
+    schemars::generate::SchemaSettings::draft2020_12()
+        .for_serialize()
+        .with(|settings| settings.inline_subschemas = true)
+        .into_generator()
+        .subschema_for::<InputRejection<'_>>()
+        .to_value()
+}
+
 /// Parameter failure before any business process or permission request.
 #[derive(Debug, thiserror::Error)]
 #[error("{code}: {detail}")]
@@ -23,32 +51,15 @@ impl ExecInputError {
     }
 
     /// Preserves both the typed source and a bounded model-readable validation receipt.
-    pub fn diagnostic_json(&self) -> Result<String, serde_json::Error> {
-        #[derive(Serialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Diagnostic<'a> {
-            code: &'a str,
-            stage: &'static str,
-            field: Option<&'a str>,
-            detail: &'a str,
-            line: Option<usize>,
-            column: Option<usize>,
-            next_action: &'static str,
-        }
-        #[derive(Serialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Receipt<'a> {
-            diagnostic: Diagnostic<'a>,
-            process_started: bool,
-        }
+    pub fn diagnostic_data(&self) -> Result<serde_json::Value, serde_json::Error> {
         let mut detail = self.detail.as_str();
         let mut end = detail.len().min(4096);
         while !detail.is_char_boundary(end) {
             end -= 1;
         }
         detail = &detail[..end];
-        let receipt = Receipt {
-            diagnostic: Diagnostic {
+        let receipt = InputRejection {
+            diagnostic: InputDiagnostic {
                 code: self.code,
                 stage: "validate",
                 field: self.field.as_deref().filter(|field| field.len() <= 4096),
@@ -59,7 +70,7 @@ impl ExecInputError {
             },
             process_started: false,
         };
-        serde_json::to_string(&receipt)
+        serde_json::to_value(receipt)
     }
 }
 

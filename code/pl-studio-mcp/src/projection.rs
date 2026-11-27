@@ -29,12 +29,14 @@ pub enum ProjectedInput {
 pub enum ProjectionError {
     #[error("author input schema must be a JSON object")]
     InvalidInputSchema,
-    #[error("author output schema must be a JSON object")]
+    #[error("author output schema must be a JSON Schema object or boolean")]
     InvalidOutputSchema,
-    #[error("embedded input schema must use JSON Schema 2020-12")]
+    #[error("embedded schema must use JSON Schema 2020-12")]
     UnsupportedDialect,
-    #[error("embedded input schema $id must be an absolute URI without a fragment")]
+    #[error("embedded schema $id must be an absolute URI without a fragment")]
     InvalidSchemaId,
+    #[error("embedded schema {0} needs an author-provided absolute base URI")]
+    MissingReferenceBase(&'static str),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -86,12 +88,7 @@ impl ToolProjection {
         let output_schema = if publish_output_schema {
             definition
                 .output_schema()
-                .map(|schema| {
-                    schema
-                        .as_object()
-                        .cloned()
-                        .ok_or(ProjectionError::InvalidOutputSchema)
-                })
+                .map(output_envelope)
                 .transpose()?
         } else {
             None
@@ -149,28 +146,32 @@ fn input_envelope(input: Value) -> Map<String, Value> {
     ])
 }
 
+fn output_envelope(schema: &Value) -> Result<Map<String, Value>, ProjectionError> {
+    let output = match schema {
+        Value::Bool(_) => schema.clone(),
+        Value::Object(schema) => {
+            let mut schema = schema.clone();
+            // MCP defaults an unspecified dialect to 2020-12. A resource
+            // boundary keeps author-local references rooted in this schema.
+            schema.entry("$schema").or_insert_with(|| DIALECT.into());
+            Value::Object(embedded_resource(&schema)?)
+        }
+        _ => return Err(ProjectionError::InvalidOutputSchema),
+    };
+    Ok(Map::from_iter([
+        ("$schema".into(), DIALECT.into()),
+        ("type".into(), "object".into()),
+        ("properties".into(), json!({"result": output})),
+        ("required".into(), json!(["result"])),
+        ("additionalProperties".into(), false.into()),
+    ]))
+}
+
 fn embedded_resource(schema: &Map<String, Value>) -> Result<Map<String, Value>, ProjectionError> {
     if schema.get("$schema").and_then(Value::as_str) != Some(DIALECT) {
         return Err(ProjectionError::UnsupportedDialect);
     }
-    if let Some(id) = schema.get("$id") {
-        // A valid author URI is absolute iff it has an RFC 3986 scheme.
-        // Do not parse it as an HTTP URI: identifiers may be non-hierarchical
-        // (urn:uuid, for example). This only classifies the resource boundary,
-        // not URI validity or the rest of the author's schema document.
-        let absolute = id.as_str().is_some_and(|id| {
-            !id.contains('#')
-                && id.split_once(':').is_some_and(|(scheme, _)| {
-                    scheme.starts_with(|c: char| c.is_ascii_alphabetic())
-                        && scheme
-                            .bytes()
-                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'-' | b'.'))
-                })
-        });
-        if !absolute {
-            return Err(ProjectionError::InvalidSchemaId);
-        }
-    }
+    validate_resource_scope(schema, false)?;
     let mut resource = schema.clone();
     // JSON Schema Core 2020-12 §§8.2.1 and 9.3: $id establishes an
     // independently rooted embedded resource. Local $ref values, including #,
@@ -179,9 +180,184 @@ fn embedded_resource(schema: &Map<String, Value>) -> Result<Map<String, Value>, 
         // An identifier, not a network endpoint. Hierarchical absolute IDs also
         // preserve local-fragment resolution in consumers using URL joiners.
         Value::String(format!(
-            "https://anywork.invalid/tool-input/{}",
+            "https://anywork.invalid/tool-schema/{}",
             Uuid::new_v4()
         ))
     });
     Ok(resource)
+}
+
+// Classify the resource boundary only; the author remains responsible for a valid schema.
+// Identifiers may be non-HTTP URIs (including URNs).
+fn absolute_uri(value: &str) -> bool {
+    value.split_once(':').is_some_and(|(scheme, _)| {
+        scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+            && scheme
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'-' | b'.'))
+    })
+}
+
+fn validate_resource_scope(
+    schema: &Map<String, Value>,
+    mut author_base: bool,
+) -> Result<(), ProjectionError> {
+    if let Some(dialect) = schema.get("$schema")
+        && dialect.as_str() != Some(DIALECT)
+    {
+        return Err(ProjectionError::UnsupportedDialect);
+    }
+    if let Some(id) = schema.get("$id") {
+        let id = id
+            .as_str()
+            .filter(|id| {
+                !id.is_empty()
+                    && !id.contains('#')
+                    && id.bytes().all(|byte| byte.is_ascii_graphic())
+            })
+            .ok_or(ProjectionError::InvalidSchemaId)?;
+        author_base |= absolute_uri(id);
+        if !author_base {
+            return Err(ProjectionError::InvalidSchemaId);
+        }
+    }
+    if !author_base {
+        for keyword in ["$ref", "$dynamicRef"] {
+            if let Some(uri) = schema.get(keyword).and_then(Value::as_str)
+                && !uri.is_empty()
+                && !uri.starts_with('#')
+                && !absolute_uri(uri)
+            {
+                return Err(ProjectionError::MissingReferenceBase(keyword));
+            }
+        }
+    }
+    // Only schema-valued keywords establish scope; const/enum/examples are author data.
+    for key in [
+        "$defs",
+        "definitions",
+        "properties",
+        "patternProperties",
+        "dependentSchemas",
+        "dependencies",
+    ] {
+        if let Some(table) = schema.get(key).and_then(Value::as_object) {
+            for child in table.values().filter_map(Value::as_object) {
+                validate_resource_scope(child, author_base)?;
+            }
+        }
+    }
+    for key in ["allOf", "anyOf", "oneOf", "prefixItems"] {
+        if let Some(list) = schema.get(key).and_then(Value::as_array) {
+            for child in list.iter().filter_map(Value::as_object) {
+                validate_resource_scope(child, author_base)?;
+            }
+        }
+    }
+    for key in [
+        "items",
+        "additionalItems",
+        "unevaluatedItems",
+        "contentSchema",
+        "additionalProperties",
+        "unevaluatedProperties",
+        "contains",
+        "propertyNames",
+        "not",
+        "if",
+        "then",
+        "else",
+    ] {
+        if let Some(child) = schema.get(key).and_then(Value::as_object) {
+            validate_resource_scope(child, author_base)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_transport_envelope_preserves_author_schema_resource_and_finality() {
+        let author = json!({
+            "$schema": DIALECT,
+            "$id": "https://example.test/answer",
+            "$defs": {"answer": {"type": ["string", "null"]}},
+            "$ref": "#/$defs/answer"
+        });
+        let definition = ToolDefinition::json("answer", "answer", json!({"type":"object"}))
+            .unwrap()
+            .with_output_schema(author.clone())
+            .unwrap();
+        let projection = ToolProjection::prepare(&definition, JsonInput::Object, true).unwrap();
+        assert_eq!(
+            projection.declaration().output_schema.as_ref().unwrap(),
+            json!({
+                "$schema": DIALECT,
+                "type":"object",
+                "properties":{"result":author},
+                "required":["result"],
+                "additionalProperties":false
+            })
+            .as_object()
+            .unwrap()
+        );
+        assert!(
+            ToolProjection::prepare(&definition, JsonInput::Object, false)
+                .unwrap()
+                .declaration()
+                .output_schema
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn output_schema_rejects_incompatible_embedded_dialect_and_relative_identity() {
+        assert_eq!(
+            output_envelope(&json!({"$schema":"http://json-schema.org/draft-07/schema#"})),
+            Err(ProjectionError::UnsupportedDialect)
+        );
+        assert_eq!(
+            output_envelope(&json!({"$id":"relative.json"})),
+            Err(ProjectionError::InvalidSchemaId)
+        );
+        let schema = output_envelope(&json!({"type":"array", "items":{"type":"integer"}})).unwrap();
+        let resource = &schema["properties"]["result"];
+        assert_eq!(resource["type"], "array");
+        assert_eq!(resource["$schema"], DIALECT);
+        assert!(
+            resource["$id"]
+                .as_str()
+                .unwrap()
+                .starts_with("https://anywork.invalid/")
+        );
+    }
+
+    #[test]
+    fn output_references_keep_author_scope_without_inventing_relative_bases() {
+        for keyword in ["$ref", "$dynamicRef"] {
+            let schema = json!({"properties":{"answer":{keyword:"other.json#/$defs/value"}}});
+            assert_eq!(
+                output_envelope(&schema),
+                Err(ProjectionError::MissingReferenceBase(keyword))
+            );
+            let mut based = schema.clone();
+            based["$id"] = "https://example.test/answer.json".into();
+            assert!(output_envelope(&based).is_ok());
+        }
+        let recursive = json!({"$defs":{"child":{"$ref":"#"}},"$ref":"#/$defs/child",
+            "const":{"$ref":"not-a-schema.json","$schema":"user data"}});
+        let envelope = output_envelope(&recursive).unwrap();
+        assert_eq!(
+            envelope["properties"]["result"]["$defs"],
+            recursive["$defs"]
+        );
+        assert_eq!(
+            envelope["properties"]["result"]["const"],
+            recursive["const"]
+        );
+        assert!(output_envelope(&json!({"$id":"urn:example:answer","$ref":"#"})).is_ok());
+    }
 }

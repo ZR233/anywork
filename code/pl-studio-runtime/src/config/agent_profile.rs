@@ -25,7 +25,7 @@ pub struct UserAgentProfile {
 }
 
 /// 单文件诊断只排除对应 Profile，不阻断其余系统或用户 Profile。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentProfileDiagnostic {
     pub path: PathBuf,

@@ -82,8 +82,17 @@ impl<L: FrozenMcpLease, H: MediaHost> Tool for McpTool<L, H> {
                     ));
                 }
             };
-        if result.is_error == Some(true) {
-            let mut error = McpError::invalid("MCP server reported a tool execution error");
+        let failure = if result.is_error == Some(true) {
+            Some("MCP server reported a tool execution error")
+        } else if self.descriptor.output_schema.is_some() && result.structured_content.is_none() {
+            Some(
+                "MCP server returned a successful tool result without structuredContent required by its output schema",
+            )
+        } else {
+            None
+        };
+        if let Some(failure) = failure {
+            let mut error = McpError::invalid(failure);
             error.observed = Some(Observed::Projected(projected));
             Err(error)
         } else {

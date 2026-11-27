@@ -39,7 +39,8 @@ async fn invoke_function(index: usize, function: Function) -> (usize, mlua::Resu
 pub struct ExecInput {
     /// Lua 5.4 orchestration. Shell: return tools.exec_command(args). Patch: return tools.apply_patch(args.patch).
     /// Put command parameters or patch text in the separate JSON args field, not inside this code.
-    /// Only print/return enter context; a returned command record includes exitCode and both streams.
+    /// Use print or return to send text and values to the model. Permitted explicit media is delivered separately.
+    /// A returned command record includes exitCode and both streams.
     pub code: String,
     /// JSON object available as global args (default {}). Pass a real object, not JSON-encoded text.
     /// Shell example: {"command":"your shell command"}. Patch example: {"patch":"*** Begin Patch..."}.
@@ -68,6 +69,7 @@ pub struct Binding {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallFailure {
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<serde_json::Value>,
 }
 impl From<String> for CallFailure {
@@ -91,7 +93,7 @@ pub trait ToolHost: Send + Sync + 'static {
         &self,
         name: String,
         arguments: serde_json::Value,
-    ) -> impl Future<Output = Result<serde_json::Value, CallFailure>> + Send;
+    ) -> impl Future<Output = Result<Option<serde_json::Value>, CallFailure>> + Send;
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -120,22 +122,26 @@ Patch (put the string in args.patch):
 
 Only code is parsed as Lua. args is data, not executable text: escape its strings once for JSON, without another layer of Lua quoting. Do not paste shell commands or JSON objects into code. For multiple child calls within ONE program, put their inputs in that program's args fields and reference them, e.g. tools.exec_command(args.build). If constructing a Lua table is necessary, fields use key=value, never JSON key:value. Lua long strings must have matching delimiters, e.g. [=[text]=]; choose a higher level if the content includes the closing delimiter.
 
-tools.exec_command returns a terminal record with taskId, exitCode, stdout.content and stderr.content. Returning this record preserves errors and both streams. For larger results, print selected fields; include exitCode and stderr. Check exitCode == 0 before dependent actions. Nonzero command exits are data; permission, transport, timeout and other tool failures raise errors. pcall catches a failure with message and optional output. Completed effects are retained and never replayed automatically; Lua syntax errors start no tools.
+tools.exec_command returns a terminal record with taskId, exitCode, stdout and stderr. Returning this record preserves errors and both streams. For larger results, print selected fields; include exitCode and stderr. Check exitCode == 0 before dependent actions. Nonzero command exits are data; permission, transport, timeout and other tool failures raise errors. pcall catches a failure with message and optional output. Completed effects are retained and never replayed automatically; Lua syntax errors start no tools.
 A terminal child record may still contain its taskId: that is not a pending outer program. A running outer receipt explicitly has status="running", taskId and toolName; wait on that exact taskId. Match each result to its original call and state, not result arrival order, and do not select an already-terminal child merely because its result contains an ID.
-Only print(...) and return enter context; tables print as JSON. maxOutputBytes defaults to 8192 UTF-8 bytes; filter before printing or raise it for a relevant excerpt. Truncation identifies the original task for get_tool_task paging; its complete recovery receipt is retained even when the budget leaves no room for a content preview. Do not rerun commands to recover output.
+maxOutputBytes defaults to 8192 UTF-8 bytes; filter before printing or raise it for a relevant excerpt. Truncation identifies the original task for get_tool_task paging; its complete recovery receipt is retained even when the budget leaves no room for a content preview. Do not rerun commands to recover output.
 timeoutMs defaults to 120000 and covers the whole program including child waits; expiry cancels children. It is not a yield delay. Background delivery is automatic. If exec returns a running taskId, the program keeps running. Start other independent work before waiting; when its result is needed and no independent work remains, use top-level wait until that program is terminal. A message can wake wait early. Child calls suspend until terminal. For stdin, start with interactive=true, use another exec to list_tool_tasks and tools.write_stdin on the running exec_command taskId, then wait for the original program. Leave enough deadline for both calls.
 A running program may not have reached its later child calls. A missing child receipt does not prove that command will never start. Keep those calls owned by the original program: wait for it, or cancel and confirm its children have settled, then inspect the original receipts. Do not resubmit its commands through another exec while it can still execute them.
 Each invocation has fresh state, including args (default empty object). Keep dependent reads, calculations and writes in one program or wait for the previous program.
 Independent tasks that need separate receipts, waits or cancellation should use separate top-level exec calls in the SAME model response, each with its own code and args. Ordinary Lua statements await child completion in order: placing an instant command after a long command makes it wait too. Do not combine independent tasks into a sequential program merely to batch them. Use parallel below only when one program should own and collect the independent children together.
 parallel takes ONE array of zero-argument functions, not separate function arguments or already-executed calls. For two independent commands with JSON args {{"first":{{"command":"first"}},"second":{{"command":"second"}}}}, use:
 return parallel({{function() return tools.exec_command(args.first) end, function() return tools.exec_command(args.second) end}})
-Results keep input order; up to four calls overlap, and the host serializes mutations within that program.
-MCP calls return structuredContent when provided, otherwise their full content record.
+Results keep input order, using json.null for functions that return nil. Up to four calls overlap, and the host serializes mutations within that program.
+A successful tool call with no program value returns nil. For remote MCP tool calls, the program value comes from structuredContent. An MCP success without structuredContent returns nil when the tool has no output schema and raises an invocation error when one is declared. For an MCP response with isError=true, pcall returns false and an error table with err.message and optional err.output containing the observed structuredContent. Use print(...) or return to send text and values to the model. Tables render as JSON. The host separately delivers permitted explicit media from successful calls and from operation failures returned as data. An ordinary resource reference is delivered only if its ID appears in the printed or returned preview, regardless of its MIME type.
 json.decode(text) and json.encode(value) convert JSON; arrays use 1-based indexing and ipairs. json.null and json.array preserve null and empty arrays. json.null is truthy: compare optional cursors with nil or json.null. OS/file/network operations go through tools.
 
 Frozen Lua SDK (only these names exist inside code; discover_tools, Plan, wait, interaction and turn-ending tools are separate top-level calls, without tools. or exec; newly discovered bindings appear in the next exec):
 {sdk}"#
     ), pl_agent_tool::typed::input_schema_for::<ExecInput>()).expect("static Lua declaration")
+        .with_output_schema(serde_json::json!({"type":"object","properties":{
+            "output":{"type":"string"},"error":{"type":["string","null"]}
+        },"required":["output","error"],"additionalProperties":false}))
+        .expect("static Lua output schema")
 }
 
 pub async fn execute<H: ToolHost>(
@@ -228,7 +234,8 @@ async fn run<H: ToolHost>(
                         else { host.call(name, arguments).await }
                     };
                     match result {
-                        Ok(value) => Ok((true, lua.to_value(&value)?)),
+                        Ok(Some(value)) => Ok((true, lua.to_value(&value)?)),
+                        Ok(None) => Ok((true, Value::Nil)),
                         Err(error) => {
                             let value = lua.to_value(&error)?;
                             if let Value::Table(table) = &value {
@@ -288,7 +295,10 @@ async fn run<H: ToolHost>(
             if let Some(error) = failure { return Err(error); }
             let table = lua.create_table()?;
             table.set_metatable(Some(lua.array_metatable()))?;
-            for (i, value) in values.into_iter().enumerate() { table.set(i + 1, value.expect("all functions completed without failure"))?; }
+            for (i, value) in values.into_iter().enumerate() {
+                let value = value.expect("all functions completed without failure");
+                table.set(i + 1, if value.is_nil() { lua.null() } else { value })?;
+            }
             Ok(table)
         }})?)?;
         let print_logs = logs.clone();
@@ -297,7 +307,7 @@ async fn run<H: ToolHost>(
             let mut line = String::new();
             for value in values {
                 if !line.is_empty() { line.push('\t'); }
-                if matches!(value, Value::Table(_)) {
+                if matches!(value, Value::Table(_)) || value == lua.null() {
                     let value: serde_json::Value = lua.from_value(value)?;
                     line.push_str(&serde_json::to_string(&value).map_err(mlua::Error::external)?);
                 } else { line.push_str(&tostring.call::<String>(value)?); }
@@ -351,7 +361,7 @@ fn diagnostic(code: &str, error: mlua::Error) -> String {
         {
             // This is conditional guidance, not a claim that every colon is a bad field.
             text.push_str(
-                "\nIf this is a result table, Lua fields use key=value: write stderr=r.stderr.content, not stderr:r.stderr.content. Keep valid obj:method(...) calls and colons inside strings unchanged."
+                "\nIf this is a result table, Lua fields use key=value: write stderr=r.stderr, not stderr:r.stderr. Keep valid obj:method(...) calls and colons inside strings unchanged."
             );
         }
         text.push_str("\nSource excerpt (quoted data, numbered; long lines keep head/tail):");

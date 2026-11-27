@@ -298,8 +298,8 @@ impl pl_agent_tool::Tool for AwaitingPermission {
             )
             .await
             .map_err(pl_core::tool::opaque::ToolError::new)?;
-        Ok(pl_core::tool::ToolOutput::new(
-            OpaquePayload::text(format!("{decision:?}")),
+        Ok(pl_core::tool::ToolOutput::from_data(
+            serde_json::Value::String(format!("{decision:?}")),
             vec![text("decision recorded")],
         ))
     }

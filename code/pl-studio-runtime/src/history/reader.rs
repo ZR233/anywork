@@ -859,6 +859,53 @@ impl HistoryReader {
         .await
     }
 
+    pub(crate) async fn read_committed_tool_receipt(
+        &self,
+        call_id: String,
+        original_id: String,
+        key: &'static str,
+    ) -> Result<Option<Vec<u8>>> {
+        self.run(move |reader| async move {
+            let tx = reader.store.reader.begin().await?;
+            if let Some(original) = db::event(&tx, &original_id).await?
+                && original.record.call_id.as_deref() != Some(call_id.as_str())
+            {
+                return Err(HistoryError::Integrity(
+                    "tool original call identity mismatch".into(),
+                ));
+            }
+            let mut result = None;
+            for (event, chunked) in
+                db::tool_receipt_events(&tx, &call_id, &original_id, key).await?
+            {
+                let body = super::body::committed_named_body(
+                    &tx,
+                    reader.database_id(),
+                    &event.record,
+                    key,
+                )
+                .await?;
+                match body {
+                    Some(bytes) if result.is_none() => result = Some(bytes),
+                    Some(_) => {
+                        return Err(HistoryError::Integrity(
+                            "multiple original receipts for one call".into(),
+                        ));
+                    }
+                    None if chunked => {
+                        return Err(HistoryError::Integrity(
+                            "stored tool receipt has no body manifest".into(),
+                        ));
+                    }
+                    None => {}
+                }
+            }
+            tx.commit().await?;
+            Ok(result)
+        })
+        .await
+    }
+
     pub async fn original_for_entity(
         &self,
         entity_id: String,

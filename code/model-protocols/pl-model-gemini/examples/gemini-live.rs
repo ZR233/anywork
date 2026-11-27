@@ -193,6 +193,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         reasoning_content: None,
                         tool_calls: None,
                         tool_result: Some(ToolResultRecord {
+                            data: None,
                             item_id: call.id.clone(),
                             call_id: call.call_id.clone(),
                             name: call.name.clone(),

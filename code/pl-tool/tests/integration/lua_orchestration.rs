@@ -26,6 +26,24 @@ struct Child {
     fail: bool,
 }
 
+fn image_reference(id: &str) -> pl_core::context::ResourceReference {
+    pl_core::context::ResourceReference::new(
+        id.into(),
+        format!("sha256:{}", "0".repeat(64)),
+        0,
+        "image/png".into(),
+    )
+    .unwrap()
+}
+
+fn declared_image(id: &str) -> ContextContent {
+    pl_model::runtime::attachment_content(
+        image_reference(id),
+        pl_model::completion::AttachmentModality::Image,
+    )
+    .unwrap()
+}
+
 #[derive(Debug)]
 struct Policy {
     denied: bool,
@@ -92,22 +110,17 @@ impl Tool for Child {
             );
         }
         self.calls.fetch_add(1, Ordering::SeqCst);
-        let data = json!({"selected":7,"hidden":"PRIVATE_INTERMEDIATE"}).to_string();
-        let output = ToolOutput::new(
-            OpaquePayload::new("application/json", 1, data.clone()).unwrap(),
+        let data = json!({"selected":7,"hidden":"PRIVATE_INTERMEDIATE","reference":"PLAIN_IMAGE"});
+        let output = ToolOutput::from_data(
+            data.clone(),
             vec![
-                ContextContent::Text { text: data.into() },
-                pl_model::runtime::attachment_content(
-                    pl_core::context::ResourceReference::new(
-                        "LUA_IMAGE".into(),
-                        format!("sha256:{}", "0".repeat(64)),
-                        0,
-                        "image/png".into(),
-                    )
-                    .unwrap(),
-                    pl_model::completion::AttachmentModality::Image,
-                )
-                .unwrap(),
+                ContextContent::Text {
+                    text: data.to_string().into(),
+                },
+                declared_image("LUA_IMAGE"),
+                ContextContent::Resource {
+                    reference: image_reference("PLAIN_IMAGE"),
+                },
             ],
         );
         if self.fail {
@@ -163,15 +176,27 @@ impl HistorySink for RecordingSink {
 
 #[tokio::test]
 async fn real_thread_retains_nested_originals_without_putting_them_into_model_history() {
-    for (fail, denied) in [(false, false), (true, false), (false, true)] {
+    for (fail, denied, select_reference) in [
+        (false, false, false),
+        (false, false, true),
+        (true, false, false),
+        (false, true, false),
+    ] {
         let expected_calls = if denied { 0 } else { 3 };
         let sink = RecordingSink::default();
         let calls = Arc::new(AtomicUsize::new(0));
         let requests = Arc::new(Mutex::new(Vec::new()));
         let code = if fail || denied {
-            "local function child() local ok,err=pcall(function() return tools.child(args) end); assert(not ok); return tostring(err) end; parallel({child,child,child}); return 'handled'"
+            "local function child() local ok,err=pcall(function() return tools.child(args) end); assert(not ok); if err.output then assert(err.output.reference=='PLAIN_IMAGE') end end; parallel({child,child,child}); return 'handled'".to_owned()
         } else {
-            "local r=parallel({function() return tools.child(args) end,function() return tools.child(args) end,function() return tools.child(args) end}); return r[1].selected"
+            let selection = if select_reference {
+                "reference"
+            } else {
+                "selected"
+            };
+            format!(
+                "local r=parallel({{function() return tools.child(args) end,function() return tools.child(args) end,function() return tools.child(args) end}}); return r[1].{selection}"
+            )
         };
         let model = host::Calls {
             calls: std::collections::VecDeque::from([(
@@ -240,11 +265,25 @@ async fn real_thread_retains_nested_originals_without_putting_them_into_model_hi
             matches!(&child.target,ToolDeliveryTarget::Nested{parent_call_id} if parent_call_id==&parent.call_id)
         );
         assert!(child.delivered_context.is_empty());
-        assert!(child.output.payload().content().contains(if denied {
-            "host policy denied"
+        if denied {
+            assert!(child.output.data().is_none());
+            assert!(
+                matches!(&child.outcome, pl_core::thread::ToolOutcome::Failed(error)
+                if error.to_string().contains("host policy denied"))
+            );
         } else {
-            "PRIVATE_INTERMEDIATE"
-        }));
+            assert_eq!(
+                child.output.data().unwrap()["hidden"],
+                "PRIVATE_INTERMEDIATE"
+            );
+            assert!(
+                child
+                    .output
+                    .content()
+                    .iter()
+                    .any(|part| matches!(part, ContextContent::Media { .. }))
+            );
+        }
         let call_id = child.call_id.clone();
         let serialized = serde_json::to_string(
             &requests
@@ -256,7 +295,8 @@ async fn real_thread_retains_nested_originals_without_putting_them_into_model_hi
         )
         .unwrap();
         assert!(!serialized.contains("PRIVATE_INTERMEDIATE"));
-        assert_eq!(serialized.contains("LUA_IMAGE"), !denied);
+        assert_eq!(serialized.contains("LUA_IMAGE"), !fail && !denied);
+        assert_eq!(parent.output.content().iter().any(|part| matches!(part, ContextContent::Resource { reference } if reference.id() == "PLAIN_IMAGE")), select_reference);
         assert_eq!(
             deliveries
                 .iter()
@@ -352,13 +392,7 @@ impl Tool for Reveal {
         &self.definition
     }
     async fn execute(&self, _: OpaquePayload, _: CallContext) -> Result<ToolOutput, ToolError> {
-        Ok(ToolOutput::new(
-            OpaquePayload::text("revealed"),
-            vec![ContextContent::Text {
-                text: "revealed".into(),
-            }],
-        )
-        .with_revealed_tools(vec!["child".into()]))
+        Ok(ToolOutput::text("revealed".into()).with_revealed_tools(vec!["child".into()]))
     }
 }
 
@@ -459,13 +493,106 @@ impl Tool for Gate {
         let cancelled = tokio::select! { _=context.cancellation.cancelled()=>true, _=self.release.notified()=>false };
         self.exited.store(true, Ordering::SeqCst);
         if cancelled {
-            return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
+            return Err(
+                ToolError::new(pl_core::thread::ThreadError::Cancelled).with_output(
+                    ToolOutput::from_data(
+                        json!({"observed": true}),
+                        vec![declared_image("CANCELLED_IMAGE")],
+                    ),
+                ),
+            );
         }
-        Ok(ToolOutput::new(
-            OpaquePayload::text("gate completed"),
-            vec![],
-        ))
+        Ok(ToolOutput::from_data(json!("gate completed"), vec![]))
     }
+}
+
+#[tokio::test]
+async fn lua_catches_nested_cancellation_without_delivering_the_child_media() {
+    use pl_core::thread::{ToolOutcome, task::TaskStatus};
+    use std::time::Duration;
+
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let definition =
+        ToolDefinition::json("gate", "Cancellable child", json!({"type":"object"})).unwrap();
+    let gate = prepare_registration("gate", &definition, ToolCallPolicy::DirectOnly)
+        .unwrap()
+        .attach(ToolHandle::new(Gate {
+            definition,
+            entered: entered.clone(),
+            release: Default::default(),
+            exited: Default::default(),
+        }))
+        .nested(false);
+    let code = "local ok, err=pcall(tools.gate, {}); assert(not ok and err.message:find('cancelled',1,true)); assert(err.output.observed); return 'parent continued'";
+    let thread = ThreadHandle::start(
+        "lua-cancelled-media".into(),
+        DynModelSession::new(host::Calls {
+            calls: [("exec".into(), json!({"code":code}).to_string())].into(),
+            requests: Default::default(),
+        }),
+    )
+    .unwrap();
+    thread
+        .register_tools(vec![lua_registration(), gate])
+        .await
+        .unwrap();
+    let mut snapshots = thread.subscribe();
+    let runner = tokio::spawn({
+        let thread = thread.clone();
+        async move { thread.run_turn(host::turn("cancel gate")).await }
+    });
+    let observed = tokio::time::timeout(Duration::from_secs(5), async {
+        entered.notified().await;
+        while let Some(snapshot) = snapshots.next().await {
+            if let Some(task) = snapshot
+                .tasks
+                .values()
+                .find(|task| task.tool_id == "gate" && task.status == TaskStatus::Running)
+            {
+                return Some(task.id.clone());
+            }
+        }
+        None
+    })
+    .await;
+    if !matches!(&observed, Ok(Some(_))) {
+        thread.close().await.unwrap();
+    }
+    let task_id = observed.unwrap().unwrap();
+    assert_eq!(
+        thread.cancel_task(task_id).await.unwrap(),
+        pl_core::tool::task::TaskCancellationReceipt::Requested
+    );
+    let finished = tokio::time::timeout(Duration::from_secs(5), runner).await;
+    thread.close().await.unwrap();
+    finished.unwrap().unwrap().unwrap();
+
+    let effects = thread.effects().await.unwrap();
+    let mut deliveries = effects.iter().flat_map(|effect| effect.deliveries.iter());
+    let child = deliveries
+        .clone()
+        .find(|delivery| delivery.tool_id == "gate")
+        .unwrap();
+    let parent = deliveries
+        .find(|delivery| delivery.tool_id == "exec")
+        .unwrap();
+    assert!(matches!(child.outcome, ToolOutcome::Cancelled));
+    assert!(
+        child
+            .output
+            .content()
+            .contains(&declared_image("CANCELLED_IMAGE"))
+    );
+    assert!(child.delivered_context.is_empty());
+    assert!(matches!(parent.outcome, ToolOutcome::Succeeded));
+    assert_eq!(parent.output.data().unwrap()["output"], "parent continued");
+    assert!(
+        parent
+            .output
+            .content()
+            .iter()
+            .all(|part| matches!(part, ContextContent::Text { .. }))
+    );
 }
 
 #[tokio::test]

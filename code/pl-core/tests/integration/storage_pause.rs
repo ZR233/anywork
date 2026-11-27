@@ -244,7 +244,10 @@ impl pl_agent_tool::Tool for BudgetTool {
     ) -> Result<ToolOutput, ToolError> {
         self.0.send(context.call_id).unwrap();
         tokio::time::sleep(self.1).await;
-        Ok(ToolOutput::new(input.clone(), vec![text(input.content())]))
+        Ok(ToolOutput::from_data(
+            serde_json::Value::String(input.content().to_owned()),
+            vec![text(input.content())],
+        ))
     }
 }
 
@@ -334,8 +337,10 @@ async fn sliced_tool_batch_services_control_and_reports_unstarted_capacity_failu
         .find(|delivery| delivery.call_id == "batch-tool-8")
         .unwrap()
         .clone();
-    let error: serde_json::Value =
-        serde_json::from_str(failure.output.payload().content()).unwrap();
+    let error: serde_json::Value = match &failure.delivered_context[0] {
+        ContextContent::Text { text } => serde_json::from_str(text).unwrap(),
+        other => panic!("expected capacity diagnostic, got {other:?}"),
+    };
     assert_eq!(error["code"], "capacity_unavailable");
     assert_eq!(error["notStarted"], true);
     assert!(matches!(
@@ -756,7 +761,10 @@ impl pl_agent_tool::Tool for HeldTool {
             .send(call_id)
             .expect("test observes tool start");
         self.release.notified().await;
-        Ok(ToolOutput::new(input.clone(), vec![text(input.content())]))
+        Ok(ToolOutput::from_data(
+            serde_json::Value::String(input.content().to_owned()),
+            vec![text(input.content())],
+        ))
     }
 }
 
@@ -1564,7 +1572,10 @@ impl pl_agent_tool::Tool for FaultDuringModel {
             .report_output_storage_fault(fault)
             .await
             .unwrap();
-        Ok(ToolOutput::new(input, vec![text("known output")]))
+        Ok(ToolOutput::from_data(
+            serde_json::Value::String(input.content().to_owned()),
+            vec![text("known output")],
+        ))
     }
 }
 
@@ -1775,8 +1786,10 @@ impl pl_agent_tool::Tool for ObligationFaultTool {
         };
         let fault = OutputStorageFault::new(StorageFaultKind::WriteFailed, Arc::new(source))
             .with_obligation(self.obligation.clone());
-        Err(ToolError::new(fault)
-            .with_output(ToolOutput::new(input.clone(), vec![text("partial")])))
+        Err(ToolError::new(fault).with_output(ToolOutput::from_data(
+            serde_json::Value::String(input.content().to_owned()),
+            vec![text("partial")],
+        )))
     }
 }
 
@@ -1953,8 +1966,10 @@ impl pl_agent_tool::Tool for RepairFaultTool {
         };
         let fault = OutputStorageFault::new(StorageFaultKind::WriteFailed, Arc::new(source))
             .with_obligation(obligation);
-        Err(ToolError::new(fault)
-            .with_output(ToolOutput::new(input.clone(), vec![text("partial")])))
+        Err(ToolError::new(fault).with_output(ToolOutput::from_data(
+            serde_json::Value::String(input.content().to_owned()),
+            vec![text("partial")],
+        )))
     }
 }
 
@@ -2102,7 +2117,10 @@ impl pl_agent_tool::Tool for EarlyRepairTool {
             OutputStorageFault::new(StorageFaultKind::WriteFailed, source)
                 .with_obligation(obligation),
         )
-        .with_output(ToolOutput::new(input.clone(), vec![text("partial")])))
+        .with_output(ToolOutput::from_data(
+            serde_json::Value::String(input.content().to_owned()),
+            vec![text("partial")],
+        )))
     }
 }
 
@@ -2338,8 +2356,14 @@ impl pl_agent_tool::Tool for ObligationReporterTool {
                 .await
                 .expect("the running call reports its fault");
         }
-        Err(ToolError::new(capture_obligation_fault(&self.obligation))
-            .with_output(ToolOutput::new(input.clone(), vec![text("partial")])))
+        Err(
+            ToolError::new(capture_obligation_fault(&self.obligation)).with_output(
+                ToolOutput::from_data(
+                    serde_json::Value::String(input.content().to_owned()),
+                    vec![text("partial")],
+                ),
+            ),
+        )
     }
 }
 
@@ -2501,7 +2525,10 @@ impl pl_agent_tool::Tool for ImmediateFaultTool {
         self.reported.send(()).expect("the test observes the claim");
         // Stay in flight so the test reads the latch while the call is still running.
         self.release.notified().await;
-        Ok(ToolOutput::new(input.clone(), vec![text(input.content())]))
+        Ok(ToolOutput::from_data(
+            serde_json::Value::String(input.content().to_owned()),
+            vec![text(input.content())],
+        ))
     }
 }
 
@@ -2665,7 +2692,10 @@ impl pl_agent_tool::Tool for ProgressingTool {
         // The refusal must not make the owner wait for this call: the test keeps the tool blocked so
         // it can read the published fault while the preview's producer is still in flight.
         self.release.notified().await;
-        Ok(ToolOutput::new(input.clone(), vec![text(input.content())]))
+        Ok(ToolOutput::from_data(
+            serde_json::Value::String(input.content().to_owned()),
+            vec![text(input.content())],
+        ))
     }
 }
 

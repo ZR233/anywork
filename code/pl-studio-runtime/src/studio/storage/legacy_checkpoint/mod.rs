@@ -6,6 +6,7 @@ mod usage;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use pl_agent_tool::{ToolData, ToolResult};
 use pl_core::context::{ContextContent, ContextRecord, ContextSnapshot, OpaquePayload};
 use pl_core::model::ModelToolDeclaration;
 use pl_core::thread::extensions::ExtensionMutation;
@@ -17,6 +18,9 @@ use pl_core::thread::{
     AttemptOutcome, RequestAttempt, RuntimeFact, ThreadError, ThreadSnapshot, ToolDelivery,
 };
 use pl_core::tool::{ToolControl, ToolOutput};
+use serde_json::Value;
+
+use super::tool_result_upgrade::{LEGACY_PAYLOAD_FIELD, MODEL_ATTACHMENT_FORMAT};
 
 /// Bodies larger than this leave the checkpoint file and are named by a blob reference instead.
 ///
@@ -126,28 +130,63 @@ pub enum CheckpointBodySlot {
         record_id: String,
         call_index: usize,
     },
+    ContextToolData {
+        record_id: String,
+    },
     /// The producer payload of one unconsumed input.
-    InputPayload { ordinal: u64 },
+    InputPayload {
+        ordinal: u64,
+    },
     /// One content item of one unconsumed input.
-    InputContent { ordinal: u64, content_index: usize },
+    InputContent {
+        ordinal: u64,
+        content_index: usize,
+    },
     /// The producer payload of one unconsumed inbox message.
-    InboxPayload { sequence: u64 },
+    InboxPayload {
+        sequence: u64,
+    },
     /// One content item of one unconsumed inbox message.
-    InboxContent { sequence: u64, content_index: usize },
+    InboxContent {
+        sequence: u64,
+        content_index: usize,
+    },
     /// The producer payload of one pending interaction request.
-    InteractionRequest { id: String },
+    InteractionRequest {
+        id: String,
+    },
     /// The producer payload of one resolved interaction response.
-    InteractionResponsePayload { id: String },
+    InteractionResponsePayload {
+        id: String,
+    },
     /// One content item of one resolved interaction response.
-    InteractionResponseContent { id: String, content_index: usize },
+    InteractionResponseContent {
+        id: String,
+        content_index: usize,
+    },
     /// One proposed application record carried by an interaction resolution.
-    InteractionMutationPayload { id: String, mutation_index: usize },
+    InteractionMutationPayload {
+        id: String,
+        mutation_index: usize,
+    },
     /// The pending approval prompt of one live tool call.
-    PermissionPayload { id: String },
+    PermissionPayload {
+        id: String,
+    },
     /// The exact host decision material of one live permission record.
-    PermissionResponse { id: String },
-    /// The producer payload of a pending tool delivery.
-    DeliveryPayload { call_id: String },
+    PermissionResponse {
+        id: String,
+    },
+    /// The pre-v7 opaque producer payload of a pending delivery, only restored during upgrade.
+    DeliveryPayload {
+        call_id: String,
+    },
+    DeliveryData {
+        call_id: String,
+    },
+    DeliveryDetails {
+        call_id: String,
+    },
     /// A model-visible projection item of a pending tool delivery result.
     DeliveryOutputContext {
         call_id: String,
@@ -159,16 +198,22 @@ pub enum CheckpointBodySlot {
         content_index: usize,
     },
     /// The interaction request of a pending tool delivery that awaits its host answer.
-    DeliveryInteraction { call_id: String },
+    DeliveryInteraction {
+        call_id: String,
+    },
     /// The payload of one current application record.
-    ExtensionPayload { id: String },
+    ExtensionPayload {
+        id: String,
+    },
     /// One content item of the current facts of a stable host source.
     RuntimeFactContent {
         source_id: String,
         content_index: usize,
     },
     /// The producer declaration of one discovered tool.
-    ToolDeclaration { tool_index: usize },
+    ToolDeclaration {
+        tool_index: usize,
+    },
     /// The Thread's current private context.
     PrivateContext,
 }
@@ -184,7 +229,37 @@ pub enum CheckpointBodyKind {
     /// A [`ContextContent::Text`] body.
     Text,
     /// An opaque body, with the producer-owned format and version it was frozen with.
-    Opaque { format: String, version: u32 },
+    Opaque {
+        format: String,
+        version: u32,
+    },
+    Media {
+        format: String,
+        version: u32,
+    },
+    Json,
+}
+
+fn upgrade_manifest_media(entries: &mut [CheckpointExternalBody]) {
+    for entry in entries {
+        if matches!(
+            entry.slot,
+            CheckpointBodySlot::ContextContent { .. }
+                | CheckpointBodySlot::InputContent { .. }
+                | CheckpointBodySlot::InboxContent { .. }
+                | CheckpointBodySlot::InteractionResponseContent { .. }
+                | CheckpointBodySlot::DeliveryOutputContext { .. }
+                | CheckpointBodySlot::DeliveryDeliveredContext { .. }
+                | CheckpointBodySlot::RuntimeFactContent { .. }
+        ) && let CheckpointBodyKind::Opaque { format, version } = &entry.body
+            && format == MODEL_ATTACHMENT_FORMAT
+        {
+            entry.body = CheckpointBodyKind::Media {
+                format: format.clone(),
+                version: *version,
+            };
+        }
+    }
 }
 
 /// One body the checkpoint no longer inlines, and the slot it must be restored into.
@@ -231,6 +306,8 @@ pub enum CheckpointLegacyError {
     ExternalBodiesPending,
     #[error("invalid legacy checkpoint encoding: {0}")]
     Encoding(#[from] serde_json::Error),
+    #[error("invalid pre-ToolResult checkpoint: {0}")]
+    ToolResult(#[source] anyhow::Error),
 }
 
 /// One body a schema-1/2 checkpoint externalized from a resident attempt.
@@ -386,13 +463,18 @@ impl LegacyThreadCheckpoint {
             ));
         }
         let mut root: serde_json::Value = serde_json::from_str(envelope)?;
-        usage::upgrade(&mut root)?;
+        if header.schema_version < 6 {
+            usage::upgrade(&mut root)?;
+        }
+        super::tool_result_upgrade::upgrade_state(&mut root)
+            .map_err(CheckpointLegacyError::ToolResult)?;
         if header.schema_version >= 3 {
             // Schemas 3 and 4 already use the lightweight resident attempt shape, so their only
             // conversion is the current envelope: a version-4 checkpoint simply has no continuation,
             // execution, purpose or durable requirement yet, and every missing field keeps its
             // default instead of being reconstructed into a fact that never existed.
-            let checkpoint: ThreadCheckpoint = serde_json::from_value(root)?;
+            let mut checkpoint: ThreadCheckpoint = serde_json::from_value(root)?;
+            upgrade_manifest_media(&mut checkpoint.external_bodies);
             return Ok(Self {
                 checkpoint,
                 attempts: Vec::new(),
@@ -437,7 +519,8 @@ impl LegacyThreadCheckpoint {
         {
             return Err(CheckpointLegacyError::InvalidAttemptSlot);
         }
-        let checkpoint: ThreadCheckpoint = serde_json::from_value(root)?;
+        let mut checkpoint: ThreadCheckpoint = serde_json::from_value(root)?;
+        upgrade_manifest_media(&mut checkpoint.external_bodies);
         Ok(Self {
             checkpoint,
             attempts,
@@ -589,14 +672,14 @@ impl ThreadCheckpoint {
     /// added typed host facts, message purpose and usage provenance. The lightweight resident attempt
     /// shape introduced by schema 3 still excludes the frozen input context and the complete attempt
     /// outcome, because the matching historical effect batch is their only durable copy.
-    pub const SCHEMA_VERSION: u32 = 6;
+    pub const SCHEMA_VERSION: u32 = 7;
 
     /// Schema versions this build no longer interprets in its normal path, but can still convert
     /// through [`Self::decode_legacy`].
     ///
     /// Schema 1 inlines every body; schema 2 may name external bodies instead of inlining them and
     /// schema 1/2 also inline attempt bodies that later schemas keep only in the effect batch.
-    pub const LEGACY_SCHEMA_VERSIONS: [u32; 5] = [1, 2, 3, 4, 5];
+    pub const LEGACY_SCHEMA_VERSIONS: [u32; 6] = [1, 2, 3, 4, 5, 6];
 
     /// Whether this build interprets `schema_version` without loss.
     pub fn supports_schema(schema_version: u32) -> bool {
@@ -624,6 +707,27 @@ impl ThreadCheckpoint {
     /// Rejects a non-legacy version, a non-empty current-context manifest, and malformed JSON.
     pub fn decode_legacy(envelope: &str) -> Result<Self, CheckpointLegacyError> {
         LegacyThreadCheckpoint::decode_json(envelope)?.into_current()
+    }
+
+    /// Schema 24 stores the checkpoint head and separately hashed context records. Its old v6
+    /// head may also reference legacy blobs, so keep the version until those slots are filled.
+    pub(crate) fn decode_history_upgrade(
+        envelope: &str,
+    ) -> Result<(Self, bool), CheckpointLegacyError> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Header {
+            schema_version: u32,
+        }
+        let schema = serde_json::from_str::<Header>(envelope)?.schema_version;
+        match schema {
+            Self::SCHEMA_VERSION => Ok((serde_json::from_str(envelope)?, false)),
+            6 => Ok((
+                LegacyThreadCheckpoint::decode_json(envelope)?.checkpoint,
+                true,
+            )),
+            _ => Ok((Self::decode_legacy(envelope)?, true)),
+        }
     }
 
     /// Captures the restart DTO: current facts only, with history referenced by its fence.
@@ -881,6 +985,22 @@ impl ThreadCheckpoint {
                 record_id,
                 call_index,
             } => self.restore_record_call(record_id, *call_index, entry, bytes),
+            CheckpointBodySlot::ContextToolData { record_id } => {
+                let record = Arc::make_mut(&mut self.state.context.records)
+                    .iter_mut()
+                    .find(|record| &record.id == record_id)
+                    .ok_or_else(|| CheckpointBodyError::SlotMismatch(record_id.clone()))?;
+                if !record.tool_data.is_absent()
+                    || !matches!(
+                        record.source,
+                        pl_core::context::ContextSource::ToolResult { .. }
+                    )
+                {
+                    return Err(CheckpointBodyError::SlotMismatch(record_id.clone()));
+                }
+                record.tool_data = ToolData::Value(json_from_body(&entry.body, bytes)?);
+                Ok(())
+            }
             CheckpointBodySlot::InputPayload { ordinal }
             | CheckpointBodySlot::InputContent { ordinal, .. } => {
                 self.restore_input(*ordinal, entry, bytes)
@@ -903,7 +1023,15 @@ impl ThreadCheckpoint {
                 self.restore_discovered_tool(*tool_index, entry, bytes)
             }
             CheckpointBodySlot::DeliveryPayload { call_id } => {
-                let body = DeliveryBody::Payload(payload_from_body(&entry.body, bytes)?);
+                let body = DeliveryBody::LegacyPayload(payload_from_body(&entry.body, bytes)?);
+                self.apply_delivery_body(call_id, &entry.body, body)
+            }
+            CheckpointBodySlot::DeliveryData { call_id } => {
+                let body = DeliveryBody::Data(json_from_body(&entry.body, bytes)?);
+                self.apply_delivery_body(call_id, &entry.body, body)
+            }
+            CheckpointBodySlot::DeliveryDetails { call_id } => {
+                let body = DeliveryBody::Details(json_from_body(&entry.body, bytes)?);
                 self.apply_delivery_body(call_id, &entry.body, body)
             }
             CheckpointBodySlot::DeliveryOutputContext {
@@ -984,45 +1112,62 @@ impl ThreadCheckpoint {
         }
     }
 
-    /// Refills one body of the pending delivery with `call_id`.
-    ///
-    /// A tool output keeps its producer payload, model projection and interaction request in fields
-    /// only its own constructors write, so a refilled body rebuilds the output from the parts it
-    /// still carries instead of mutating a field in place. Every other frozen field is preserved.
+    /// Refills a validated delivery slot and preserves the independent framework control.
     fn apply_delivery_body(
         &mut self,
         call_id: &str,
         kind: &CheckpointBodyKind,
         body: DeliveryBody,
     ) -> Result<(), CheckpointBodyError> {
-        let mut deliveries = self.state.deliveries.iter().cloned().collect::<Vec<_>>();
-        let delivery = deliveries
+        let mismatch = || CheckpointBodyError::SlotMismatch(call_id.to_owned());
+        let delivery = Arc::make_mut(&mut self.state.deliveries)
             .iter_mut()
             .find(|delivery| delivery.call_id == call_id)
-            .ok_or_else(|| CheckpointBodyError::SlotMismatch(call_id.to_owned()))?;
-        let output = delivery.output.clone();
+            .ok_or_else(mismatch)?;
+        let output = &delivery.output;
+        let mut data = output.result().tool_data().clone();
+        let mut details = output.details().cloned();
+        let mut context = output.content().to_vec();
+        let mut interaction = output.interaction().cloned();
         match body {
-            DeliveryBody::Payload(payload) => {
-                if !output.payload().content().is_empty()
-                    || !opaque_matches_kind(output.payload(), kind)
+            DeliveryBody::LegacyPayload(payload) => {
+                let placeholder: OpaquePayload = details
+                    .as_ref()
+                    .and_then(|details| details.get(LEGACY_PAYLOAD_FIELD))
+                    .cloned()
+                    .and_then(|value| serde_json::from_value(value).ok())
+                    .ok_or(CheckpointBodyError::InvalidBody)?;
+                if self.schema_version >= Self::SCHEMA_VERSION
+                    || !opaque_is_placeholder(&placeholder, kind)
                 {
-                    return Err(CheckpointBodyError::SlotMismatch(call_id.to_owned()));
+                    return Err(mismatch());
                 }
-                delivery.output = rebuild_tool_output(payload, output.context().to_vec(), &output)?;
+                details = Some(
+                    super::tool_result_upgrade::legacy_details(&delivery.tool_id, payload)
+                        .map_err(|_| CheckpointBodyError::InvalidBody)?,
+                );
+            }
+            DeliveryBody::Data(value) => {
+                if !data.is_absent() {
+                    return Err(mismatch());
+                }
+                data = ToolData::Value(value);
+            }
+            DeliveryBody::Details(value) => {
+                if details.is_some() {
+                    return Err(mismatch());
+                }
+                details = Some(value);
             }
             DeliveryBody::OutputContext {
                 content_index,
                 content,
             } => {
-                let mut context = output.context().to_vec();
-                let slot = context
-                    .get_mut(content_index)
-                    .ok_or_else(|| CheckpointBodyError::SlotMismatch(call_id.to_owned()))?;
+                let slot = context.get_mut(content_index).ok_or_else(mismatch)?;
                 if !content_is_placeholder(slot, kind) {
-                    return Err(CheckpointBodyError::SlotMismatch(call_id.to_owned()));
+                    return Err(mismatch());
                 }
                 *slot = content;
-                delivery.output = rebuild_tool_output(output.payload().clone(), context, &output)?;
             }
             DeliveryBody::DeliveredContext {
                 content_index,
@@ -1031,29 +1176,22 @@ impl ThreadCheckpoint {
                 let slot = delivery
                     .delivered_context
                     .get_mut(content_index)
-                    .ok_or_else(|| CheckpointBodyError::SlotMismatch(call_id.to_owned()))?;
+                    .ok_or_else(mismatch)?;
                 if !content_is_placeholder(slot, kind) {
-                    return Err(CheckpointBodyError::SlotMismatch(call_id.to_owned()));
+                    return Err(mismatch());
                 }
                 *slot = content;
+                return Ok(());
             }
             DeliveryBody::Interaction(payload) => {
-                let interaction = output
-                    .interaction()
-                    .ok_or_else(|| CheckpointBodyError::SlotMismatch(call_id.to_owned()))?;
-                if !interaction.content().is_empty() || !opaque_matches_kind(interaction, kind) {
-                    return Err(CheckpointBodyError::SlotMismatch(call_id.to_owned()));
+                let placeholder = interaction.as_ref().ok_or_else(mismatch)?;
+                if !opaque_is_placeholder(placeholder, kind) {
+                    return Err(mismatch());
                 }
-                let mut rebuilt = rebuild_tool_output(
-                    output.payload().clone(),
-                    output.context().to_vec(),
-                    &output,
-                )?;
-                rebuilt = rebuilt.with_interaction(payload);
-                delivery.output = rebuilt;
+                interaction = Some(payload);
             }
         }
-        self.state.deliveries = deliveries.into();
+        delivery.output = rebuild_tool_output(data, context, details, interaction, output)?;
         Ok(())
     }
 
@@ -1299,6 +1437,18 @@ fn externalize_record(
     }
     externalized.content = content;
     externalized.tool_calls = calls;
+    if let ToolData::Value(value) = &record.tool_data
+        && externalize_json(
+            value,
+            CheckpointBodySlot::ContextToolData {
+                record_id: record.id.clone(),
+            },
+            threshold,
+            extracted,
+        )
+    {
+        externalized.tool_data = ToolData::Absent;
+    }
     externalized
 }
 
@@ -1486,17 +1636,35 @@ fn externalize_delivery(
     threshold: usize,
     extracted: &mut Vec<ExtractedCheckpointBody>,
 ) -> ToolDelivery {
-    let output = delivery.output.clone();
-    let payload = externalize_payload(
-        output.payload(),
-        CheckpointBodySlot::DeliveryPayload {
-            call_id: delivery.call_id.clone(),
-        },
-        threshold,
-        extracted,
-    );
+    let output = &delivery.output;
+    let mut data = output.result().tool_data().clone();
+    if let ToolData::Value(value) = &data
+        && externalize_json(
+            value,
+            CheckpointBodySlot::DeliveryData {
+                call_id: delivery.call_id.clone(),
+            },
+            threshold,
+            extracted,
+        )
+    {
+        data = ToolData::Absent;
+    }
+    let details = output
+        .details()
+        .filter(|value| {
+            !externalize_json(
+                value,
+                CheckpointBodySlot::DeliveryDetails {
+                    call_id: delivery.call_id.clone(),
+                },
+                threshold,
+                extracted,
+            )
+        })
+        .cloned();
     let context = output
-        .context()
+        .content()
         .iter()
         .enumerate()
         .map(|(content_index, content)| {
@@ -1543,27 +1711,15 @@ fn externalize_delivery(
         })
         .collect();
 
-    let mut rebuilt = ToolOutput::new(payload, context)
-        .with_revealed_tools(output.revealed_tools().to_vec())
-        .with_extension_mutations(output.extension_mutations().to_vec());
-    match (output.control(), interaction) {
-        (ToolControl::EndTurn, _) => rebuilt = rebuilt.ending_turn(),
-        (ToolControl::AwaitInteraction, Some(interaction)) => {
-            rebuilt = rebuilt.with_interaction(interaction);
-        }
-        // `Continue` keeps the default control: extraction above reads an interaction request only
-        // for `AwaitInteraction`, so `Continue` never pairs with `Some`, and an `AwaitInteraction`
-        // output without a request keeps that same default.
-        (ToolControl::Continue, _) | (ToolControl::AwaitInteraction, None) => {}
-    }
-
     ToolDelivery {
         target: delivery.target.clone(),
         call_id: delivery.call_id.clone(),
         tool_id: delivery.tool_id.clone(),
-        output: rebuilt,
+        output: rebuild_tool_output(data, context, details, interaction, output)
+            .expect("a producer ToolOutput awaiting interaction carries its request"),
         delivered_context,
         outcome: delivery.outcome.clone(),
+        cancellation_cause: delivery.cancellation_cause.clone(),
     }
 }
 
@@ -1584,14 +1740,26 @@ fn externalize_content(
             })
             .unwrap_or_else(|| content.clone())
         }
-        ContextContent::Opaque { payload } if payload.byte_len() > threshold => {
+        ContextContent::Opaque { payload } | ContextContent::Media { payload }
+            if payload.byte_len() > threshold =>
+        {
             let bytes = payload.content().as_bytes().to_vec();
-            let kind = CheckpointBodyKind::Opaque {
-                format: payload.format().to_owned(),
-                version: payload.version(),
+            let media = matches!(content, ContextContent::Media { .. });
+            let format = payload.format().to_owned();
+            let version = payload.version();
+            let kind = if media {
+                CheckpointBodyKind::Media { format, version }
+            } else {
+                CheckpointBodyKind::Opaque { format, version }
             };
             let placeholder = OpaquePayload::new(payload.format(), payload.version(), "")
-                .map(|payload| ContextContent::Opaque { payload })
+                .map(|payload| {
+                    if media {
+                        ContextContent::Media { payload }
+                    } else {
+                        ContextContent::Opaque { payload }
+                    }
+                })
                 .ok();
             record_body(kind, slot, bytes, extracted, |_| placeholder)
                 .unwrap_or_else(|| content.clone())
@@ -1600,8 +1768,32 @@ fn externalize_content(
         // neither duplicates nor re-externalizes it.
         ContextContent::Text { .. }
         | ContextContent::Resource { .. }
+        | ContextContent::Media { .. }
         | ContextContent::Opaque { .. } => content.clone(),
     }
+}
+
+fn externalize_json(
+    value: &Value,
+    slot: CheckpointBodySlot,
+    threshold: usize,
+    extracted: &mut Vec<ExtractedCheckpointBody>,
+) -> bool {
+    let Ok(bytes) = serde_json::to_vec(value) else {
+        return false;
+    };
+    bytes.len() > threshold
+        && record_body(CheckpointBodyKind::Json, slot, bytes, extracted, |_| {
+            Some(())
+        })
+        .is_some()
+}
+
+fn json_from_body(kind: &CheckpointBodyKind, bytes: &[u8]) -> Result<Value, CheckpointBodyError> {
+    if !matches!(kind, CheckpointBodyKind::Json) {
+        return Err(CheckpointBodyError::InvalidBody);
+    }
+    serde_json::from_slice(bytes).map_err(|_| CheckpointBodyError::InvalidBody)
 }
 
 /// Replaces one opaque payload body when it is larger than the threshold.
@@ -1658,10 +1850,15 @@ fn record_body<T>(
 fn content_is_placeholder(content: &ContextContent, kind: &CheckpointBodyKind) -> bool {
     match (content, kind) {
         (ContextContent::Text { text }, CheckpointBodyKind::Text) => text.is_empty(),
-        (ContextContent::Opaque { payload }, _) => {
-            payload.content().is_empty() && opaque_matches_kind(payload, kind)
+        (ContextContent::Opaque { payload }, CheckpointBodyKind::Opaque { .. }) => {
+            opaque_is_placeholder(payload, kind)
         }
-        (ContextContent::Text { .. }, _) | (ContextContent::Resource { .. }, _) => false,
+        (ContextContent::Media { payload }, CheckpointBodyKind::Media { format, version }) => {
+            payload.content().is_empty()
+                && payload.format() == format.as_str()
+                && payload.version() == *version
+        }
+        _ => false,
     }
 }
 
@@ -1723,6 +1920,11 @@ fn content_from_body(
         CheckpointBodyKind::Opaque { .. } => ContextContent::Opaque {
             payload: payload_from_body(kind, bytes)?,
         },
+        CheckpointBodyKind::Media { format, version } => ContextContent::Media {
+            payload: OpaquePayload::new(format.as_str(), *version, text)
+                .map_err(|_| CheckpointBodyError::InvalidBody)?,
+        },
+        CheckpointBodyKind::Json => return Err(CheckpointBodyError::InvalidBody),
     })
 }
 
@@ -1737,7 +1939,9 @@ fn payload_from_body(
             OpaquePayload::new(format.as_str(), *version, text)
                 .map_err(|_| CheckpointBodyError::InvalidBody)
         }
-        CheckpointBodyKind::Text => Err(CheckpointBodyError::InvalidBody),
+        CheckpointBodyKind::Text | CheckpointBodyKind::Media { .. } | CheckpointBodyKind::Json => {
+            Err(CheckpointBodyError::InvalidBody)
+        }
     }
 }
 
@@ -1746,7 +1950,9 @@ fn payload_from_body(
 /// The delivery is rebuilt from the parts it still carries after the refill, so the loader names
 /// which part it restored instead of mutating a field the tool output does not expose.
 enum DeliveryBody {
-    Payload(OpaquePayload),
+    LegacyPayload(OpaquePayload),
+    Data(Value),
+    Details(Value),
     OutputContext {
         content_index: usize,
         content: ContextContent,
@@ -1760,21 +1966,23 @@ enum DeliveryBody {
 
 /// Rebuilds a tool output from replaced parts, preserving every other frozen field.
 fn rebuild_tool_output(
-    payload: OpaquePayload,
+    data: ToolData,
     context: Vec<ContextContent>,
+    details: Option<Value>,
+    interaction: Option<OpaquePayload>,
     source: &ToolOutput,
 ) -> Result<ToolOutput, CheckpointBodyError> {
-    let mut output = ToolOutput::new(payload, context)
+    let mut output = ToolOutput::new(ToolResult::new(data, context))
         .with_revealed_tools(source.revealed_tools().to_vec())
         .with_extension_mutations(source.extension_mutations().to_vec());
+    if let Some(details) = details {
+        output = output.with_details(details);
+    }
     match source.control() {
         ToolControl::Continue => {}
         ToolControl::EndTurn => output = output.ending_turn(),
         ToolControl::AwaitInteraction => {
-            let interaction = source
-                .interaction()
-                .cloned()
-                .ok_or(CheckpointBodyError::InvalidBody)?;
+            let interaction = interaction.ok_or(CheckpointBodyError::InvalidBody)?;
             output = output.with_interaction(interaction);
         }
     }
@@ -1785,6 +1993,125 @@ fn rebuild_tool_output(
 mod tests {
     use super::*;
     use pl_core::thread::{UsageSummary, input::InputPurpose};
+
+    #[test]
+    fn tool_result_checkpoint_externalizes_program_data_details_and_media() -> anyhow::Result<()> {
+        use pl_core::{
+            context::ContextSource,
+            thread::{ToolDeliveryTarget, ToolOutcome},
+            tool::{ToolFailureKind, opaque::ToolError},
+        };
+        use serde_json::json;
+
+        let data = json!({"result": "正文🧭".repeat(CHECKPOINT_BODY_THRESHOLD_BYTES / 4)});
+        let details = json!({"archive": "完整原件".repeat(CHECKPOINT_BODY_THRESHOLD_BYTES / 4)});
+        let media = ContextContent::Media {
+            payload: OpaquePayload::new(
+                "media.test",
+                1,
+                "immutable".repeat(CHECKPOINT_BODY_THRESHOLD_BYTES / 4),
+            )?,
+        };
+        let record = ContextRecord {
+            id: "result-record".into(),
+            turn_id: None,
+            source: ContextSource::ToolResult {
+                call_id: "call".into(),
+                tool_id: "tool".into(),
+            },
+            content: Vec::new(),
+            tool_data: ToolData::Value(data.clone()),
+            tool_calls: Vec::new(),
+        };
+        let output = ToolOutput::from_data(data, vec![media]).with_details(details);
+        let cancellation_cause = Arc::new(ToolError::operation(
+            std::io::Error::other("checkpoint operation failed"),
+            output.clone(),
+        ));
+        let delivery = ToolDelivery {
+            target: ToolDeliveryTarget::CallResult,
+            call_id: "call".into(),
+            tool_id: "tool".into(),
+            output,
+            delivered_context: Vec::new(),
+            outcome: ToolOutcome::Cancelled,
+            cancellation_cause: Some(cancellation_cause),
+        };
+        let snapshot = ThreadSnapshot {
+            context: ContextSnapshot {
+                revision: 1,
+                records: Arc::from([record]),
+            },
+            deliveries: Arc::from([delivery]),
+            ..Default::default()
+        };
+        let checkpoint =
+            ThreadCheckpoint::capture_transfer("checkpoint-result".into(), 0, snapshot);
+        let (externalized, bodies) = checkpoint.externalize_bodies(CHECKPOINT_BODY_THRESHOLD_BYTES);
+        assert_eq!(bodies.len(), 4);
+        let head = serde_json::to_vec(&externalized)?;
+        assert!(head.len() < CHECKPOINT_BODY_THRESHOLD_BYTES);
+        let mut restored: ThreadCheckpoint = serde_json::from_slice(&head)?;
+        for body in bodies {
+            restored.materialize_body(&body.entry.reference, &body.bytes)?;
+        }
+        assert!(restored.is_materialized());
+        let cause = restored.state.deliveries[0]
+            .cancellation_cause
+            .as_deref()
+            .expect("restored cancellation cause");
+        assert_eq!(cause.kind(), ToolFailureKind::Operation);
+        assert_eq!(cause.to_string(), "checkpoint operation failed");
+        assert_eq!(
+            serde_json::to_value(restored)?,
+            serde_json::to_value(checkpoint)?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn tool_result_checkpoint_upgrades_v6_external_payload_without_adding_data()
+    -> anyhow::Result<()> {
+        use serde_json::json;
+
+        let bytes = b"{ \"old\": \"original bytes\" }\n";
+        let reference = CheckpointBodyReference::of(bytes);
+        let base = ThreadCheckpoint::capture_transfer(
+            "old-checkpoint".into(),
+            0,
+            ThreadSnapshot::default(),
+        );
+        let mut old = serde_json::to_value(base)?;
+        old["schemaVersion"] = 6.into();
+        old["state"]["deliveries"] = json!([{
+            "target": {"kind":"callResult"}, "callId":"old-call", "toolId":"old-tool",
+            "outcome":{"kind":"cancelled"},
+            "output":{"payload":{"format":"old.opaque", "version":1, "content":""}, "context":[]},
+            "deliveredContext":[{"kind":"text", "text":"original model view"}],
+        }]);
+        old["externalBodies"] = json!([{
+            "slot": {"kind":"deliveryPayload", "callId":"old-call"},
+            "body": {"kind":"opaque", "format":"old.opaque", "version":1}, "reference":reference,
+        }]);
+        let mut legacy = LegacyThreadCheckpoint::decode_json(&serde_json::to_string(&old)?)?;
+        assert!(legacy.materialize_body(&reference, b"wrong bytes").is_err());
+        legacy.materialize_body(&reference, bytes)?;
+        let checkpoint = legacy.into_current()?;
+        let delivery = &checkpoint.state.deliveries[0];
+        assert!(delivery.cancellation_cause.is_none());
+        assert_eq!(delivery.output.data(), None);
+        assert_eq!(
+            delivery.output.details().unwrap()["legacyPayload"]["content"],
+            std::str::from_utf8(bytes)?
+        );
+        assert_eq!(
+            delivery.delivered_context,
+            [ContextContent::Text {
+                text: "original model view".into()
+            }]
+        );
+        Ok(())
+    }
 
     #[test]
     fn schema_4_checkpoint_decode_legacy_defaults_new_fields_and_flattens_usage() {

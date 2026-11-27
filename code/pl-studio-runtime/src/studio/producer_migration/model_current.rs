@@ -135,6 +135,28 @@ fn relocate_calls(current: &mut ThreadCurrent, moves: &BTreeMap<String, CallMove
             replace_call(parent_call_id, moves);
         }
     }
+    for record in Arc::make_mut(&mut state.inbox) {
+        let message = &mut record.message;
+        if message.payload.format() == "pl.core.tool-result-reference" {
+            ensure!(
+                message.payload.version() == 1,
+                "unsupported saved tool result reference"
+            );
+            if let Some(binding) = moves.get(message.payload.content()) {
+                ensure!(state.deliveries.iter().any(|delivery| {
+                    delivery.call_id == binding.current
+                        && matches!(&delivery.target, ToolDeliveryTarget::Inbox { message_id } if message_id == &message.id)
+                }), "saved tool result reference has no matching delivery");
+                // The task and message identities still own the original archive;
+                // only the reference follows the remapped protocol call identity.
+                message.payload = OpaquePayload::new(
+                    "pl.core.tool-result-reference",
+                    1,
+                    binding.current.clone(),
+                )?;
+            }
+        }
+    }
     for permission in state.permissions.values_mut() {
         if let Some(binding) = moves.get(&permission.call_id) {
             ensure!(
@@ -242,4 +264,90 @@ fn relocate_plan(
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod result_reference_tests {
+    use super::*;
+    use pl_core::thread::{
+        ToolDelivery, ToolOutcome,
+        current::RuntimeEpoch,
+        inbox::{InboxRecord, ThreadMessage},
+        task::{TaskRecord, TaskStatus},
+    };
+
+    #[test]
+    fn relocated_background_call_keeps_original_task_message_and_body() {
+        let mut current = ThreadCurrent::new("thread".into(), RuntimeEpoch::new());
+        let call = ModelToolCall {
+            call_id: "legacy-call".into(),
+            tool_id: "exec_command".into(),
+            arguments: OpaquePayload::new("application/json", 1, "{}").unwrap(),
+            presentation_contract: None,
+            rejection: None,
+        };
+        let task = TaskRecord {
+            id: "task:legacy-call".into(),
+            parent_call_id: None,
+            invocation: Some(call.clone()),
+            call_id: call.call_id.clone(),
+            tool_id: call.tool_id.clone(),
+            turn_id: "turn".into(),
+            revision: 2,
+            status: TaskStatus::Succeeded,
+            cancel_requested: false,
+            acknowledgement: None,
+            started_sequence: Some(1),
+        };
+        current.state.tasks.insert(task.id.clone(), task.clone());
+        let content = vec![ContextContent::Text {
+            text: "original frozen 正文".into(),
+        }];
+        current.state.deliveries = Arc::from([ToolDelivery {
+            target: ToolDeliveryTarget::Inbox {
+                message_id: "task-result:1".into(),
+            },
+            call_id: call.call_id.clone(),
+            tool_id: call.tool_id.clone(),
+            output: pl_core::tool::ToolOutput::from_data(
+                serde_json::json!({"exitCode":0}),
+                content.clone(),
+            ),
+            delivered_context: content.clone(),
+            outcome: ToolOutcome::Succeeded,
+            cancellation_cause: None,
+        }]);
+        current.state.inbox = Arc::from([InboxRecord {
+            sequence: 1,
+            message: ThreadMessage {
+                id: "task-result:1".into(),
+                source_id: task.id.clone(),
+                kind: pl_core::context::AgentMessageKind::Report,
+                payload: OpaquePayload::new(
+                    "pl.core.tool-result-reference",
+                    1,
+                    call.call_id.clone(),
+                )
+                .unwrap(),
+                context: content.clone(),
+            },
+        }]);
+        let moves = BTreeMap::from([(
+            call.call_id.clone(),
+            CallMove {
+                old: call,
+                current: "scoped-call".into(),
+                turn: Some("turn".into()),
+            },
+        )]);
+        relocate_calls(&mut current, &moves).unwrap();
+        assert_eq!(current.state.tasks[&task.id].call_id, "scoped-call");
+        assert_eq!(current.state.deliveries[0].call_id, "scoped-call");
+        assert_eq!(current.state.deliveries[0].delivered_context, content);
+        let message = &current.state.inbox[0].message;
+        assert_eq!(message.id, "task-result:1");
+        assert_eq!(message.source_id, task.id);
+        assert_eq!(message.payload.content(), "scoped-call");
+        assert_eq!(message.context, content);
+    }
 }

@@ -2,7 +2,7 @@
 use super::WebSearchClient;
 use pl_agent_tool::typed::TypedTool;
 use pl_core::{
-    context::{ContextContent, ContextSnapshot, ContextSource, OpaquePayload},
+    context::{ContextContent, ContextSnapshot, ContextSource},
     tool::{
         ToolOutput,
         opaque::{CallContext, ToolError},
@@ -67,6 +67,8 @@ impl ThreadWebSearchTool {
         .expect("static search definition")
         .definition()
         .clone()
+        .with_output_schema(pl_tool_search::tools::web_search::output_schema())
+        .expect("static web search output schema")
     }
 }
 impl TypedTool for ThreadWebSearchTool {
@@ -94,7 +96,7 @@ impl TypedTool for ThreadWebSearchTool {
             )
             .await
             .map_err(ToolError::new)?;
-        text_output("pl.tool.web-search", &output.response, output.preview)
+        text_output(output.into_result())
     }
 }
 
@@ -198,6 +200,8 @@ impl ThreadDeepSeekWebSearchTool {
         .expect("static search definition")
         .definition()
         .clone()
+        .with_output_schema(pl_tool_search::tools::deepseek_web_search::output_schema())
+        .expect("static DeepSeek output schema")
     }
 }
 impl TypedTool for ThreadDeepSeekWebSearchTool {
@@ -213,22 +217,14 @@ impl TypedTool for ThreadDeepSeekWebSearchTool {
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
         match self.tool.execute(args, context.cancellation).await {
-            Ok(output) => text_output(
-                "pl.tool.deepseek-web-search",
-                &output.results,
-                output.preview,
-            ),
+            Ok(output) => text_output(output.into_result()),
             Err(pl_tool_search::tools::deepseek_web_search::SearchError::Service {
                 source,
                 output,
             }) => {
                 let mut error = ToolError::new(source);
                 if let Some(output) = output {
-                    error = error.with_output(text_output(
-                        "pl.tool.deepseek-web-search",
-                        &output.results,
-                        output.preview,
-                    )?);
+                    error = error.with_output(text_output(output.into_result())?);
                 }
                 Err(error)
             }
@@ -255,6 +251,8 @@ impl ThreadDeepSeekWebFetchTool {
         .expect("static fetch definition")
         .definition()
         .clone()
+        .with_output_schema(pl_tool_search::tools::deepseek_web_fetch::output_schema())
+        .expect("static DeepSeek output schema")
     }
 }
 impl TypedTool for ThreadDeepSeekWebFetchTool {
@@ -270,22 +268,14 @@ impl TypedTool for ThreadDeepSeekWebFetchTool {
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
         match self.tool.execute(args, context.cancellation).await {
-            Ok(output) => text_output(
-                "pl.tool.deepseek-web-fetch",
-                &output.response,
-                output.preview,
-            ),
+            Ok(output) => text_output(output.into_result()),
             Err(pl_tool_search::tools::deepseek_web_fetch::FetchError::Service {
                 source,
                 output,
             }) => {
                 let mut error = ToolError::new(source);
                 if let Some(output) = output {
-                    error = error.with_output(text_output(
-                        "pl.tool.deepseek-web-fetch",
-                        &output.response,
-                        output.preview,
-                    )?);
+                    error = error.with_output(text_output(output.into_result())?);
                 }
                 Err(error)
             }
@@ -294,19 +284,12 @@ impl TypedTool for ThreadDeepSeekWebFetchTool {
     }
 }
 fn text_output(
-    format: &str,
-    response: &impl serde::Serialize,
-    text: String,
+    result: Result<pl_agent_tool::ToolResult<String>, serde_json::Error>,
 ) -> Result<ToolOutput, ToolError> {
-    Ok(ToolOutput::new(
-        OpaquePayload::new(
-            format,
-            1,
-            serde_json::to_string(response).map_err(ToolError::new)?,
-        )
-        .map_err(ToolError::new)?,
-        vec![ContextContent::Text { text: text.into() }],
-    ))
+    let result = result.map_err(ToolError::new)?;
+    Ok(ToolOutput::new(result.map_content(|text| {
+        ContextContent::Text { text: text.into() }
+    })))
 }
 
 fn recent_context(context: &ContextSnapshot) -> Option<Vec<Value>> {
@@ -339,7 +322,9 @@ fn recent_context(context: &ContextSnapshot) -> Option<Vec<Value>> {
                 .iter()
                 .filter_map(|part| match part {
                     ContextContent::Text { text } => Some(text.as_ref()),
-                    ContextContent::Resource { .. } | ContextContent::Opaque { .. } => None,
+                    ContextContent::Resource { .. }
+                    | ContextContent::Opaque { .. }
+                    | ContextContent::Media { .. } => None,
                 })
                 .collect::<Vec<_>>()
                 .join("\n");

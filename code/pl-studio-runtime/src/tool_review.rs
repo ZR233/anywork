@@ -236,7 +236,7 @@ mod tests {
                 _: CallContext,
             ) -> Result<ToolOutput, ToolError> {
                 self.0.fetch_add(1, Ordering::Relaxed);
-                Ok(ToolOutput::new(input, vec![]))
+                Ok(ToolOutput::text(input.content().to_owned()))
             }
         }
 

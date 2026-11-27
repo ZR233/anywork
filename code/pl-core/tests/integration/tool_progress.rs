@@ -88,7 +88,10 @@ impl pl_agent_tool::Tool for ProgressTool {
             self.outcomes.lock().unwrap().push(accepted);
             self.step.hand_off(index).await;
         }
-        Ok(ToolOutput::new(input.clone(), vec![text(input.content())]))
+        Ok(ToolOutput::from_data(
+            serde_json::Value::String(input.content().to_owned()),
+            vec![text(input.content())],
+        ))
     }
 }
 
@@ -394,7 +397,10 @@ impl pl_agent_tool::Tool for StorageFaultTool {
         within(tasks.report_output(ToolProgressUpdate::append(PART, "partial")))
             .await
             .expect("the accepted increment is charged before the fault");
-        let output = ToolOutput::new(input.clone(), vec![text("partial")]);
+        let output = ToolOutput::from_data(
+            serde_json::Value::String(input.content().to_owned()),
+            vec![text("partial")],
+        );
         let source = pl_core::thread::cold::ColdStoreError {
             source: Box::new(std::io::Error::other("capture write failed")),
         };
@@ -480,7 +486,7 @@ async fn a_tool_reliable_output_storage_fault_latches_and_keeps_accepted_output(
         .find(|delivery| delivery.tool_id == "store")
         .expect("the failed call's accepted output stays delivered");
     assert!(
-        delivery.output.context().iter().any(|content| matches!(
+        delivery.output.content().iter().any(|content| matches!(
             content,
             pl_core::context::ContextContent::Text { text } if text.as_ref() == "partial"
         )),

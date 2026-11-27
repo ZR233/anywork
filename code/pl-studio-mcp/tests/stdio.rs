@@ -95,7 +95,10 @@ async fn production_stdio_official_client_catalog_results_concurrency_cancel_and
         calls_before_rejection
     );
     let success = service.call_tool(call(json!({"answer":42}))).await.unwrap();
-    assert_eq!(success.structured_content, Some(json!({"answer":42})));
+    assert_eq!(
+        success.structured_content,
+        Some(json!({"result":{"answer":42}}))
+    );
     assert_eq!(
         serde_json::to_value(&success.content).unwrap(),
         json!([{"type":"text", "text":"{\"answer\":42}"}]),
@@ -105,7 +108,10 @@ async fn production_stdio_official_client_catalog_results_concurrency_cancel_and
         .call_tool(call(json!({"error":true})))
         .await
         .unwrap();
-    assert_eq!(error.structured_content, Some(json!({"error":true})));
+    assert_eq!(
+        error.structured_content,
+        Some(json!({"result":{"error":true}}))
+    );
     assert_eq!(error.is_error, Some(true));
     let mut calls = tokio::task::JoinSet::new();
     for id in 0..16u64 {
@@ -115,7 +121,10 @@ async fn production_stdio_official_client_catalog_results_concurrency_cancel_and
             let CallToolResponse::Complete(response) = response else {
                 panic!("unexpected non-final response");
             };
-            assert_eq!(response.structured_content, Some(json!({"id":id})));
+            assert_eq!(
+                response.structured_content,
+                Some(json!({"result":{"id":id}}))
+            );
         });
     }
     tokio::time::timeout(TIMEOUT, async {
@@ -192,13 +201,45 @@ async fn production_stdio_returns_single_native_content_block_over_ipc() {
         .unwrap()
         .unwrap();
         assert_eq!(result.is_error, Some(is_error), "{content}");
-        assert_eq!(result.structured_content, None, "{content}");
+        assert_eq!(
+            result.structured_content,
+            Some(json!({"result":{"content":content,"error":is_error}})),
+            "{content}"
+        );
         assert_eq!(
             serde_json::to_value(result.content).unwrap(),
             json!([expected]),
             "{content}",
         );
     }
+
+    // Program values survive the real IPC and MCP transports independently of
+    // model text; in particular null is not the absence of structured content.
+    for value in [
+        json!(null),
+        json!([]),
+        json!({}),
+        json!("{\"looksLikeJson\":true}"),
+    ] {
+        let result = service
+            .call_tool(call(json!({"content":"text", "returnValue":value})))
+            .await
+            .unwrap();
+        assert_eq!(result.structured_content, Some(json!({"result":value})));
+        assert_eq!(
+            serde_json::to_value(result.content).unwrap(),
+            json!([{"type":"text","text":"first line\n第二行"}])
+        );
+    }
+    let absent = service
+        .call_tool(call(json!({"content":"text", "noData":true})))
+        .await
+        .unwrap();
+    assert!(absent.structured_content.is_none());
+    assert_eq!(
+        serde_json::to_value(absent.content).unwrap(),
+        json!([{"type":"text","text":"first line\n第二行"}])
+    );
 
     service.close().await.unwrap();
     assert!(reap(&mut child).await.success());

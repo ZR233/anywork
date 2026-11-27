@@ -6,7 +6,12 @@ use pl_agent_tool::{InputFormat, ToolDefinition};
 use crate::model::ModelCapabilities;
 use crate::protocol::ProtocolEndpoint;
 
+mod hosted_output_schema;
 mod input_schema;
+
+pub use hosted_output_schema::{
+    HOSTED_OUTPUT_SCHEMA_DIALECT, HostedOutputSchemaError, HostedOutputSchemaResources,
+};
 
 const APPLY_PATCH_FUNCTION_DESCRIPTION: &str = "Apply a Codex-style patch to workspace files. Pass the complete patch text, beginning with *** Begin Patch and ending with *** End Patch, in the required `input` string. Every file operation uses one of *** Add File: <path>, *** Delete File: <path>, or *** Update File: <path> (optionally followed by *** Move to: <path>). Do not use ---/+++ unified diff, *** File: metadata, or natural-language edit instructions such as Insert after. Update hunk lines start with a control prefix: space for context, `-` for deletion, `+` for addition; preserve a leading `-` or `+` in the file content after that prefix. If a previous patch failed, read the target file again and retry with a smaller patch based on current content.";
 
@@ -22,18 +27,16 @@ pub enum ToolCallPolicy {
 
 /// Projects an author's complete declaration into the existing model wire DTO.
 ///
-/// This is the only author-to-model projection. It does not enforce provider-specific
-/// schema restrictions or infer execution permissions from a declaration.
+/// Programmatic eligibility requires an author-declared output schema. Execution permissions
+/// come from the host policy and provider-specific schema restrictions belong to the codecs.
 pub fn tool_definition_to_spec(definition: &ToolDefinition, policy: ToolCallPolicy) -> ToolSpec {
-    let (allowed_callers, output_schema) = match policy {
-        ToolCallPolicy::DirectOnly => (Vec::new(), definition.output_schema().cloned()),
-        ToolCallPolicy::DirectAndProgrammatic => (
-            vec![ToolCallerMode::Direct, ToolCallerMode::Programmatic],
-            Some(definition.output_schema().cloned().unwrap_or_else(
-                || serde_json::json!({"type":"object", "additionalProperties":true}),
-            )),
-        ),
-    };
+    let output_schema = definition.output_schema().cloned();
+    let allowed_callers =
+        if policy == ToolCallPolicy::DirectAndProgrammatic && output_schema.is_some() {
+            vec![ToolCallerMode::Direct, ToolCallerMode::Programmatic]
+        } else {
+            Vec::new()
+        };
     let name = definition.name().to_owned();
     let description = definition.description().to_owned();
     match definition.input() {

@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use sea_orm::ConnectionTrait;
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -135,6 +136,66 @@ pub(crate) struct BusinessFactEnvelope {
 struct AnyBodiesContainer {
     #[serde(default)]
     bodies: Vec<HistoryBodyManifestEntry>,
+}
+
+/// Reads one named receipt in the caller's committed snapshot and verifies its body binding.
+pub(super) async fn committed_named_body(
+    db: &impl ConnectionTrait,
+    database_id: &str,
+    event: &HistoryEventRecord,
+    key: &str,
+) -> Result<Option<Vec<u8>>> {
+    committed_manifest_body(db, database_id, event, key, true).await
+}
+
+/// Product bodies imported from v24 may use a logical key distinct from the physical key or
+/// reference an earlier immutable owner. Task receipts always require their exact owner/key.
+pub(super) async fn committed_manifest_body(
+    db: &impl ConnectionTrait,
+    database_id: &str,
+    event: &HistoryEventRecord,
+    key: &str,
+    require_exact_owner: bool,
+) -> Result<Option<Vec<u8>>> {
+    let manifest: AnyBodiesContainer = serde_json::from_str(&event.payload_json)?;
+    let mut entries = manifest.bodies.into_iter().filter(|entry| entry.key == key);
+    let Some(entry) = entries.next() else {
+        return Ok(None);
+    };
+    if entries.next().is_some() {
+        return Err(HistoryError::Integrity(format!(
+            "duplicate history body {key}"
+        )));
+    }
+    match (entry.inline_text, entry.reference) {
+        (Some(text), None) if text.len() as u64 == entry.byte_length => Ok(Some(text.into_bytes())),
+        (None, Some(reference))
+            if reference.database_id == database_id
+                && (!require_exact_owner
+                    || (reference.owner_event_id == event.event_id
+                        && reference.body_key == key))
+                && reference.byte_start == 0
+                && reference.byte_length == entry.byte_length =>
+        {
+            let body = super::db::body(db, &reference.body_id)
+                .await?
+                .ok_or_else(|| HistoryError::Integrity(format!("missing history body {key}")))?;
+            if body.owner != reference.owner_event_id
+                || body.key != reference.body_key
+                || body.length != entry.byte_length
+                || (require_exact_owner
+                    && (body.role.as_str() != entry.role || body.media_type != entry.media_type))
+            {
+                return Err(HistoryError::Integrity(format!(
+                    "history body metadata differs for {key}"
+                )));
+            }
+            super::db::read_verified_body(db, &body).await.map(Some)
+        }
+        _ => Err(HistoryError::Integrity(format!(
+            "invalid history body entry {key}"
+        ))),
+    }
 }
 
 pub fn decode_event_envelope(record: &HistoryEventRecord) -> Result<EventPayloadEnvelope> {

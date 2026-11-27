@@ -167,6 +167,7 @@ async fn restored_v2_multi_record_instructions_are_normalized_once() -> Result<(
         .chain(snapshot.developer.iter())
         .enumerate()
         .map(|(index, block)| ContextRecord {
+            tool_data: Default::default(),
             id: format!("instruction:migration:{index}"),
             turn_id: None,
             source: ContextSource::Instruction,
@@ -180,6 +181,7 @@ async fn restored_v2_multi_record_instructions_are_normalized_once() -> Result<(
     // independent Instruction records, while user/runtime facts had separate stable identities.
     records.extend([
         ContextRecord {
+            tool_data: Default::default(),
             id: "preserved-user-history".into(),
             turn_id: None,
             source: ContextSource::User,
@@ -189,6 +191,7 @@ async fn restored_v2_multi_record_instructions_are_normalized_once() -> Result<(
             tool_calls: Vec::new(),
         },
         ContextRecord {
+            tool_data: Default::default(),
             id: "instruction:migration:4".into(),
             turn_id: None,
             source: ContextSource::RuntimeFact {
@@ -200,6 +203,7 @@ async fn restored_v2_multi_record_instructions_are_normalized_once() -> Result<(
             tool_calls: Vec::new(),
         },
         ContextRecord {
+            tool_data: Default::default(),
             id: "preserved-runtime-fact".into(),
             turn_id: None,
             source: ContextSource::RuntimeFact {

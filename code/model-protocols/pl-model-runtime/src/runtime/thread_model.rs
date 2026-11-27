@@ -572,6 +572,7 @@ mod contract_tests {
                 context: ContextSnapshot {
                     revision: 0,
                     records: vec![ContextRecord {
+                        tool_data: Default::default(),
                         id: "input".into(),
                         turn_id: Some("contract-turn".into()),
                         source: pl_core::context::ContextSource::User,

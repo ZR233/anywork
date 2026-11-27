@@ -50,7 +50,7 @@ pub struct QueryRequest {
     pub max_results: Option<usize>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryResult {
     pub success: bool,
@@ -61,13 +61,13 @@ pub struct QueryResult {
     pub file_count: Option<usize>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Capabilities {
     pub servers: Vec<ServerCapabilities>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerCapabilities {
     pub id: String,
@@ -90,7 +90,7 @@ pub trait StatusReader: Send + Sync + 'static {
     fn status(&self) -> impl Future<Output = Result<WorkspaceStatus, Self::Error>> + Send;
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceStatus {
     pub workspace_root: String,
@@ -98,7 +98,7 @@ pub struct WorkspaceStatus {
     pub servers: Vec<ServerStatus>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerStatus {
     pub id: String,
@@ -137,15 +137,16 @@ pub struct LspContext<S> {
     pub cancellation: CancellationToken,
 }
 
-/// The domain value is retained in full; the host chooses its history envelope.
+/// The domain value and its bounded display are authored together.
 #[derive(Debug)]
 pub struct LspResult<T> {
     pub value: T,
 }
 
 impl<T: Serialize> LspResult<T> {
-    pub fn encode(&self) -> Result<(String, String), serde_json::Error> {
-        let encoded = serde_json::to_string(&self.value)?;
+    pub fn into_result(self) -> Result<pl_agent_tool::ToolResult<String>, serde_json::Error> {
+        let data = serde_json::to_value(self.value)?;
+        let encoded = data.to_string();
         let preview = pl_output::bounded_text(&encoded, 12 * 1024, 0);
         let text = if preview.truncated {
             format!(
@@ -155,6 +156,6 @@ impl<T: Serialize> LspResult<T> {
         } else {
             preview.text
         };
-        Ok((encoded, text))
+        Ok(pl_agent_tool::ToolResult::from_data(data, vec![text]))
     }
 }

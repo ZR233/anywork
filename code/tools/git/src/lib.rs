@@ -49,12 +49,12 @@ impl GitWorkspaceConfig {
 /// Git's structured domain result, without host context or history metadata.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GitOutput {
-    payload: serde_json::Value,
+    data: serde_json::Value,
 }
 
 impl GitOutput {
-    pub fn new(payload: serde_json::Value) -> Self {
-        Self { payload }
+    pub fn new(data: serde_json::Value) -> Self {
+        Self { data }
     }
 
     pub fn command(status: i32, stdout: String, stderr: String) -> Self {
@@ -65,13 +65,26 @@ impl GitOutput {
         }))
     }
 
-    pub fn payload(&self) -> &serde_json::Value {
-        &self.payload
+    pub fn data(&self) -> &serde_json::Value {
+        &self.data
     }
 
     pub fn stdout(&self) -> &str {
-        self.payload["stdout"].as_str().unwrap_or_default()
+        self.data["stdout"].as_str().unwrap_or_default()
     }
+}
+
+fn command_output_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "status": {"type": "integer"},
+            "stdout": {"type": "string"},
+            "stderr": {"type": "string"},
+        },
+        "required": ["status", "stdout", "stderr"],
+        "additionalProperties": false,
+    })
 }
 
 pub mod branch;

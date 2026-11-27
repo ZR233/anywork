@@ -308,7 +308,10 @@ impl pl_agent_tool::Tool for ControlledTool {
                 .map_err(ToolError::new)?;
         }
         self.release.cancelled().await;
-        let output = ToolOutput::new(OpaquePayload::text("original result"), vec![text("done")]);
+        let output = ToolOutput::from_data(
+            serde_json::Value::String("original result".into()),
+            vec![text("done")],
+        );
         let output = if self.permission {
             output
         } else {

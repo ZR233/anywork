@@ -1,7 +1,6 @@
 use crate::support;
 
 use anyhow::{Context, Result, ensure};
-use pl_core::context::OpaquePayload;
 use pl_studio_runtime::{
     ChatScope, ThreadWorkspaceMode,
     history::{HistoryDemand, HistoryEventsQuery, read_event_body_bytes},
@@ -55,11 +54,9 @@ async fn public_artifact(
                 .as_array()
                 .context("artifact array")?
                 .iter()
-                .find(|item| {
-                    item["kind"] == "opaque" && item["payload"]["format"] == "pl.tool.files"
-                })
-                .context("versioned file display artifact")?;
-            ensure!(artifact["payload"]["version"] == 2);
+                .find(|item| item.get("fileDisplay").is_some())
+                .context("file display artifact")?;
+            ensure!(artifact.get("payload").is_none());
             return Ok(artifact.clone());
         }
         anyhow::bail!("completed public tool original missing")
@@ -217,8 +214,8 @@ async fn show_files_real_thread_cold_read_and_archive_reselection() -> Result<()
             .await?;
         let archive_turn = support::completed_prompt(&env.runtime, &thread, "again").await?;
         let archive_artifact = public_artifact(&env.runtime, &thread, &archive_turn.id).await?;
-        let payload: OpaquePayload = serde_json::from_value(archive_artifact["payload"].clone())?;
-        let receipt = saved_file_display_receipt(&payload)?.context("archive file receipt")?;
+        let receipt =
+            saved_file_display_receipt(Some(&archive_artifact))?.context("archive file receipt")?;
         ensure!(receipt.caption.is_none());
         ensure!(receipt.files.len() == 3);
         ensure!(

@@ -99,20 +99,27 @@ impl<B: HostTools> ServerHandler for HostMcpService<B> {
             )
             .await
             .map_err(protocol_error)?;
-        let (content, structured_content) = match result.content {
-            Some(HostContent::Text(text)) => (ContentBlock::text(text), None),
-            Some(HostContent::Image { data, mime_type }) => {
-                (ContentBlock::image(data, mime_type), None)
-            }
-            None => (
-                ContentBlock::text(result.value.to_string()),
-                Some(result.value),
-            ),
-        };
+        // MCP structuredContent is an object. Keep the author value under a
+        // fixed transport field; ToolProjection applies the matching schema.
+        let structured_content = result
+            .result
+            .data()
+            .map(|value| serde_json::json!({"result": value}));
+        let content = result
+            .result
+            .content()
+            .iter()
+            .map(|content| match content {
+                HostContent::Text(text) => ContentBlock::text(text.clone()),
+                HostContent::Image { data, mime_type } => {
+                    ContentBlock::image(data.clone(), mime_type.clone())
+                }
+            })
+            .collect();
         let mut response = if result.is_error {
-            CallToolResult::error(vec![content])
+            CallToolResult::error(content)
         } else {
-            CallToolResult::success(vec![content])
+            CallToolResult::success(content)
         };
         response.structured_content = structured_content;
         Ok(response.into())

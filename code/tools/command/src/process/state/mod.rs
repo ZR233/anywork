@@ -78,7 +78,12 @@ impl CommandTerminationReason {
 /// 类别是 reader 手里已有的值，调用方不需要解析诊断文本就能把它交给自己的存储边界或工具结果，
 /// 也正因为类别是值，**预期的容量终止**（[`Self::OutputLimitExceeded`]）与**可靠保存故障**
 /// （[`Self::Write`]、[`Self::Read`]）才不会被混为一谈。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum CommandCaptureFailure {
     /// 输出触及本 operation 声明的单命令落盘上限：命令被终止，已写字节保留。
     ///

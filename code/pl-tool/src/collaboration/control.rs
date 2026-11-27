@@ -53,7 +53,7 @@ pub struct AgentSpawnResult {
     pub message_error: Option<ControlError>,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSendResult {
     pub target: String,
@@ -62,7 +62,7 @@ pub struct AgentSendResult {
     pub sequence: Option<u64>,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentInterruptResult {
     pub target: String,

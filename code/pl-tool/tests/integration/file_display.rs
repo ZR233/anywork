@@ -1,6 +1,6 @@
 use pl_agent_tool::typed::TypedTool;
 use pl_core::{
-    context::{ContextContent, ContextRecord, ContextSource, OpaquePayload, ResourceReference},
+    context::{ContextContent, ContextRecord, ContextSource, ResourceReference},
     tool::opaque::{CallContext, ToolError},
 };
 use pl_tool::{
@@ -171,45 +171,51 @@ async fn deferred_host_grant_is_scoped_to_original_workspace_and_path() {
 }
 
 #[tokio::test]
-async fn receipt_versions_and_network_items_preserve_wire_and_model_boundary() {
+async fn file_display_artifact_serializes_four_states_with_source_facts() {
+    use pl_tool::workspace::{AgentWorkspace, ToolWorkspace};
+    use serde_json::json;
+
     let temp = tempfile::tempdir().unwrap();
+    let markdown = b"# Rust file display fixture\n";
+    std::fs::write(temp.path().join("first.md"), markdown).unwrap();
+    std::fs::write(temp.path().join("download.tar"), [0; 360]).unwrap();
     let media = Arc::new(Media::default());
     let backend = Arc::new(
         ExecutorWorkspaceFileBackend::local(temp.path().into(), false)
             .await
-            .unwrap(),
+            .unwrap()
+            .with_workspace(ToolWorkspace::new(
+                AgentWorkspace::local(temp.path()).with_session_id("file-display-wire-fixture"),
+            )),
     );
     let output = ThreadShowFilesTool::new(backend.clone(), media.clone())
         .execute(
-            args(serde_json::json!({"files":[
-                {"kind":"networkImage","url":"https://example.org/photo.png"},
-                {"kind":"networkImage","url":"https://user@example.org/photo.png"}
+            args(json!({"caption":"交付文件", "files":[
+                {"kind":"workspace","path":"first.md"},
+                {"kind":"networkImage","url":"https://example.invalid/image.png"},
+                {"kind":"networkImage","url":"https://user@example.invalid/blocked.png"}
             ]})),
             context(),
         )
         .await
         .unwrap();
-    assert_eq!(output.payload().version(), 2);
-    let receipt = saved_file_display_receipt(output.payload())
+
+    let mut receipt = saved_file_display_receipt(output.details())
         .unwrap()
         .unwrap();
-    assert!(
-        matches!(&receipt.files[0], FileDisplayResult::NetworkImage { filename, url }
-        if filename == "photo.png" && url == "https://example.org/photo.png")
-    );
+    assert_eq!(*media.0.lock().unwrap(), vec![markdown.to_vec()]);
+    assert_eq!(output.content().len(), 2);
+    assert!(matches!(&output.content()[0], ContextContent::Text { text }
+        if text.contains("1 archived") && text.contains("1 network previews") && text.contains("1 failed")));
     assert!(matches!(
-        &receipt.files[1],
-        FileDisplayResult::Failed { .. }
+        &output.content()[1],
+        ContextContent::Resource { .. }
     ));
-    assert!(media.0.lock().unwrap().is_empty());
-    assert_eq!(output.context().len(), 1);
-    assert!(matches!(&output.context()[0], ContextContent::Text { text }
-        if text.contains("0 archived") && text.contains("1 network previews") && text.contains("1 failed")));
     assert!(
         !pl_tool::approval::assess(
             "show_files",
-            &serde_json::json!({"files":[
-                {"kind":"networkImage","url":"https://example.org/photo.png"}
+            &json!({"files":[
+                {"kind":"networkImage","url":"https://example.invalid/image.png"}
             ]})
             .to_string(),
             temp.path()
@@ -217,41 +223,63 @@ async fn receipt_versions_and_network_items_preserve_wire_and_model_boundary() {
         .requested_access
         .allows_external()
     );
-    let network = serde_json::json!({"status":"networkImage","filename":"photo.png","url":"https://example.org/photo.png"});
-    std::fs::write(temp.path().join("file.bin"), b"original").unwrap();
-    let deferred = serde_json::json!({"status":"deferred","filename":"file.bin","target":backend.defer_file("file.bin").await.unwrap()});
-    let ready = serde_json::json!({"status":"ready","filename":"archive.bin","modality":"file","origin":{"kind":"archive"},
-        "resource":ResourceReference::new("archive".into(), format!("sha256:{}", "a".repeat(64)), 3, "application/octet-stream".into()).unwrap()});
-    for (version, file, valid) in [
-        (1, ready.clone(), true),
-        (
-            1,
-            serde_json::json!({"status":"failed","filename":"missing","message":"missing"}),
-            true,
-        ),
-        (1, network.clone(), false),
-        (1, deferred.clone(), false),
-        (2, ready, true),
-        (2, network, true),
-        (2, deferred, true),
-        (
-            3,
-            serde_json::json!({"status":"failed","filename":"missing","message":"missing"}),
-            false,
-        ),
-    ] {
-        let payload = OpaquePayload::new(
-            "pl.tool.files",
-            version,
-            serde_json::json!({"caption":null,"files":[file]}).to_string(),
-        )
-        .unwrap();
-        assert_eq!(
-            saved_file_display_receipt(&payload).is_ok(),
-            valid,
-            "version {version}: {}",
-            payload.content()
-        );
+
+    // A local show_files call archives files. Exercise the Deferred wire variant with
+    // a real executor-issued target, without requiring an SSH peer for this contract.
+    let target = backend.defer_file("download.tar").await.unwrap();
+    backend.validate_deferred_file(&target).await.unwrap();
+    assert!(target.workspace_binding.is_some());
+    receipt.files.insert(
+        1,
+        FileDisplayResult::Deferred {
+            filename: "download.tar".into(),
+            target: target.clone(),
+        },
+    );
+
+    let digest = pl_core::context::content_hash(markdown);
+    let artifact = [json!({"fileDisplay": receipt})];
+    let encoded = serde_json::to_vec_pretty(&artifact).unwrap();
+    let [artifact]: [serde_json::Value; 1] = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(artifact["fileDisplay"]["caption"], "交付文件");
+    assert_eq!(
+        artifact["fileDisplay"]["files"],
+        json!([
+            {
+                "status":"ready", "filename":"first.md", "modality":"file",
+                "resource":{"id":digest,"contentDigest":digest,"byteLen":markdown.len(),"mediaType":"text/markdown"},
+                "origin":{"kind":"local","path":std::path::Path::new(backend.canonical_path()).join("first.md")}
+            },
+            {
+                "status":"deferred", "filename":"download.tar", "target":{
+                    "canonicalPath":target.canonical_path,"size":360,"modifiedAt":target.modified_at,
+                    "executorInstance":target.executor_instance,"workspaceRoot":target.workspace_root,
+                    "workspaceBinding":target.workspace_binding,"hostWorkspaceAccess":false
+                }
+            },
+            {"status":"networkImage", "filename":"image.png", "url":"https://example.invalid/image.png"},
+            {"status":"failed", "filename":"network-image", "message":"network image URL requires HTTPS, a host and no credentials"}
+        ])
+    );
+    assert!(
+        saved_file_display_receipt(Some(&artifact))
+            .unwrap()
+            .is_some()
+    );
+    let invalid = json!({"fileDisplay":{"caption":null,"files":[]}});
+    assert!(saved_file_display_receipt(Some(&invalid)).is_err());
+
+    // An opt-in export for the Dart consumer. Ordinary test runs still exercise the same wire assertion.
+    if let Some(path) = std::env::var_os("ANYWORK_FILE_DISPLAY_FIXTURE_PATH") {
+        use std::io::Write;
+        let path = std::path::PathBuf::from(path);
+        assert!(path.is_absolute(), "use an absolute session artifact path");
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .unwrap();
+        file.write_all(&encoded).unwrap();
     }
 }
 
@@ -307,7 +335,7 @@ async fn ordered_partial_results_keep_exact_bytes_and_do_not_project_model_media
         )
         .await
         .unwrap();
-    let receipt = saved_file_display_receipt(output.payload())
+    let receipt = saved_file_display_receipt(output.details())
         .unwrap()
         .unwrap();
     assert_eq!(receipt.caption.as_deref(), Some("delivered"));
@@ -352,11 +380,11 @@ async fn ordered_partial_results_keep_exact_bytes_and_do_not_project_model_media
     }
     assert!(
         output
-            .context()
+            .content()
             .iter()
             .all(|content| !matches!(content, ContextContent::Opaque { .. }))
     );
-    assert_eq!(output.context().len(), 4);
+    assert_eq!(output.content().len(), 4);
     for input in [
         serde_json::json!({"files":[]}),
         serde_json::json!({"files":[{"kind":"workspace","path":"a.txt"}],"caption":"x".repeat(241)}),
@@ -388,12 +416,6 @@ async fn archive_selection_uses_typed_thread_facts_including_legacy_cards() {
         "image/png".into(),
     )
     .unwrap();
-    let payload = OpaquePayload::new(
-        "pl.tool.image-card",
-        1,
-        serde_json::json!({"image":image}).to_string(),
-    )
-    .unwrap();
     let mut call = context();
     call.context.records = vec![ContextRecord {
         id: "old-card".into(),
@@ -402,7 +424,10 @@ async fn archive_selection_uses_typed_thread_facts_including_legacy_cards() {
             call_id: "old-call".into(),
             tool_id: "show_image".into(),
         },
-        content: vec![ContextContent::Opaque { payload }],
+        content: vec![ContextContent::Resource {
+            reference: image.clone(),
+        }],
+        tool_data: Default::default(),
         tool_calls: Vec::new(),
     }]
     .into();
@@ -417,7 +442,7 @@ async fn archive_selection_uses_typed_thread_facts_including_legacy_cards() {
         )
         .await
         .unwrap();
-    let receipt = saved_file_display_receipt(output.payload())
+    let receipt = saved_file_display_receipt(output.details())
         .unwrap()
         .unwrap();
     assert!(
@@ -494,7 +519,7 @@ async fn remote_source_never_exposes_a_local_path_and_valid_image_is_exact() {
         )
         .await
         .unwrap();
-    let receipt = saved_file_display_receipt(output.payload())
+    let receipt = saved_file_display_receipt(output.details())
         .unwrap()
         .unwrap();
     assert!(
@@ -503,7 +528,7 @@ async fn remote_source_never_exposes_a_local_path_and_valid_image_is_exact() {
     assert!(media.0.lock().unwrap().is_empty());
     assert!(
         output
-            .context()
+            .content()
             .iter()
             .all(|part| matches!(part, ContextContent::Text { .. }))
     );
@@ -533,7 +558,7 @@ async fn remote_source_never_exposes_a_local_path_and_valid_image_is_exact() {
         )
         .await
         .unwrap();
-    let receipt = saved_file_display_receipt(output.payload())
+    let receipt = saved_file_display_receipt(output.details())
         .unwrap()
         .unwrap();
     assert!(
@@ -566,17 +591,10 @@ impl TypedTool for HistoricalCard {
     type Output = pl_core::tool::ToolOutput;
     type Error = ToolError;
     async fn execute(&self, _: Empty, _: CallContext) -> Result<Self::Output, ToolError> {
-        Ok(pl_core::tool::ToolOutput::new(
-            OpaquePayload::new(
-                "pl.tool.image-card",
-                1,
-                serde_json::json!({"image":self.0}).to_string(),
-            )
-            .unwrap(),
-            vec![ContextContent::Text {
-                text: "An image card was added to the timeline.".into(),
-            }],
-        ))
+        Ok(
+            pl_core::tool::ToolOutput::text("An image card was added to the timeline.".into())
+                .with_details(serde_json::json!({"imageCard":{"image":self.0}})),
+        )
     }
 }
 
@@ -637,7 +655,7 @@ async fn real_thread_selects_a_legacy_card_whose_context_contains_no_media() {
         .flat_map(|effect| effect.deliveries.iter())
         .find(|delivery| delivery.tool_id == "show_files")
         .unwrap();
-    let receipt = saved_file_display_receipt(delivery.output.payload())
+    let receipt = saved_file_display_receipt(delivery.output.details())
         .unwrap()
         .unwrap();
     assert!(

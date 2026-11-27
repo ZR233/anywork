@@ -2,6 +2,7 @@
 
 use std::{
     collections::BTreeMap,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex, Weak,
         atomic::{AtomicU64, Ordering},
@@ -181,6 +182,9 @@ struct RegisteredCurrentWriter {
 #[derive(Debug)]
 struct Inner {
     threads: Mutex<BTreeMap<String, ThreadStatus>>,
+    /// Serializes registration and one-shot migration. A registered slot owns the writer's
+    /// physical directory after admission, so normal writes never retain this lock.
+    current_admission: Arc<tokio::sync::Mutex<()>>,
     stores: SharedStores,
     observations: Observations,
     queued_bytes: Arc<AtomicU64>,
@@ -249,6 +253,7 @@ impl Default for ThreadPersistenceCoordinator {
         let (capacity, _) = watch::channel(0);
         Self(Arc::new(Inner {
             threads: Mutex::new(BTreeMap::new()),
+            current_admission: Arc::new(tokio::sync::Mutex::new(())),
             stores: SharedStores::default(),
             observations: Observations::default(),
             queued_bytes: Arc::new(AtomicU64::new(0)),
@@ -281,6 +286,40 @@ impl ThreadPersistenceCoordinator {
         Ok(())
     }
 
+    /// Performs the explicit v1 Current upgrade before recovery. The directory's normal writer
+    /// retains ownership until it has joined and released its registration.
+    pub(crate) async fn upgrade_current_for_recovery(
+        &self,
+        thread_id: &str,
+        directory: PathBuf,
+    ) -> Result<()> {
+        anyhow::ensure!(!thread_id.is_empty(), "current Thread identity is empty");
+        let admission = self.0.current_admission.clone().lock_owned().await;
+        let Some((directory, directory_key)) = current_directory(directory, false).await? else {
+            return Ok(());
+        };
+        let registered = {
+            let threads = self
+                .0
+                .threads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            registered_current(&threads, thread_id, &directory, &directory_key)?.is_some()
+        };
+        let file = super::current_file::CurrentFile::new(directory, thread_id.to_owned());
+        let Some(original) = file.legacy_bytes().await? else {
+            return Ok(());
+        };
+        // A registered writer may have changed the file during the read and released its slot
+        // since. Never publish those bytes. A subsequent admission reads its successor afresh.
+        anyhow::ensure!(
+            !registered,
+            "legacy Current cannot be upgraded while its writer is registered"
+        );
+        let (current, original) = file.prepare_legacy(original).await?;
+        publish_current_upgrade(admission, move || file.publish_legacy(&current, &original)).await
+    }
+
     /// Install exactly one stable current writer in the existing per-Thread registration slot.
     /// Prepare only the caller-owned session directory, then identify its physical location before
     /// taking the registration lock. Creation/lookup errors propagate; no guessed missing-path key,
@@ -289,75 +328,23 @@ impl ThreadPersistenceCoordinator {
     pub(crate) async fn current_writer(
         &self,
         thread_id: &str,
-        directory: std::path::PathBuf,
+        directory: PathBuf,
     ) -> Result<Arc<super::current_writer::CurrentWriter>> {
         anyhow::ensure!(!thread_id.is_empty(), "current Thread identity is empty");
-        let (directory, directory_key) = tokio::task::spawn_blocking(move || {
-            anyhow::ensure!(
-                !directory.as_os_str().is_empty(),
-                "current session directory is empty"
-            );
-            // A nonexistent directory has no physical identity. Materialize it under ordinary OS
-            // permissions rather than inferring future alias/case behavior from its spelling.
-            std::fs::create_dir_all(&directory).with_context(|| {
-                format!("prepare current session directory {}", directory.display())
-            })?;
-            let directory = dunce::canonicalize(&directory).with_context(|| {
-                format!("resolve current session directory {}", directory.display())
-            })?;
-            let metadata = std::fs::metadata(&directory).with_context(|| {
-                format!("inspect current session directory {}", directory.display())
-            })?;
-            anyhow::ensure!(
-                metadata.is_dir(),
-                "current session path is not a directory: {}",
-                directory.display()
-            );
-            let key = crate::studio::instance::directory_key(&directory).with_context(|| {
-                format!("identify current session directory {}", directory.display())
-            })?;
-            Ok::<_, anyhow::Error>((directory, key))
-        })
-        .await
-        .context("join current session directory preparation")??;
+        let (directory, directory_key) = current_directory(directory, true)
+            .await?
+            .context("prepared Current session directory is missing")?;
+        let _admission = self.0.current_admission.lock().await;
         let mut threads = self
             .0
             .threads
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // Physical identity catches filesystem aliases even when their canonical strings differ.
-        // Reserving the canonical spelling too rejects replacing a live owner's directory in place.
-        if let Some((owner, registered)) = threads
-            .iter()
-            .filter_map(|(owner, status)| {
-                status
-                    .current
-                    .as_ref()
-                    .map(|registered| (owner, registered))
-            })
-            .find(|(_, registered)| {
-                registered.directory_key == directory_key
-                    || registered.writer.directory() == directory
-            })
+        if let Some(registered) =
+            registered_current(&threads, thread_id, &directory, &directory_key)?
         {
-            anyhow::ensure!(
-                owner == thread_id,
-                "current session directory {} is already registered for another Thread {owner}",
-                directory.display()
-            );
-            anyhow::ensure!(
-                registered.directory_key == directory_key,
-                "current Thread physical directory changed while registered: {}",
-                directory.display()
-            );
             return Ok(registered.writer.clone());
         }
-        anyhow::ensure!(
-            threads
-                .get(thread_id)
-                .is_none_or(|status| status.current.is_none()),
-            "current Thread registered under another session directory"
-        );
         let status = threads
             .entry(thread_id.to_owned())
             .or_insert_with(|| ThreadStatus {
@@ -1245,6 +1232,93 @@ impl ThreadPersistenceCoordinator {
     }
 }
 
+async fn current_directory(directory: PathBuf, create: bool) -> Result<Option<(PathBuf, String)>> {
+    tokio::task::spawn_blocking(move || {
+        anyhow::ensure!(
+            !directory.as_os_str().is_empty(),
+            "current session directory is empty"
+        );
+        if create {
+            std::fs::create_dir_all(&directory).with_context(|| {
+                format!("prepare current session directory {}", directory.display())
+            })?;
+        }
+        let directory = match dunce::canonicalize(&directory) {
+            Ok(directory) => directory,
+            Err(error) if !create && error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(None);
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("resolve current session directory {}", directory.display())
+                });
+            }
+        };
+        let metadata = std::fs::metadata(&directory).with_context(|| {
+            format!("inspect current session directory {}", directory.display())
+        })?;
+        anyhow::ensure!(
+            metadata.is_dir(),
+            "current session path is not a directory: {}",
+            directory.display()
+        );
+        let key = crate::studio::instance::directory_key(&directory).with_context(|| {
+            format!("identify current session directory {}", directory.display())
+        })?;
+        Ok(Some((directory, key)))
+    })
+    .await
+    .context("join current session directory preparation")?
+}
+
+async fn publish_current_upgrade(
+    admission: tokio::sync::OwnedMutexGuard<()>,
+    publish: impl FnOnce() -> Result<()> + Send + 'static,
+) -> Result<()> {
+    tokio::task::spawn_blocking(move || {
+        // The blocking operation owns admission through both atomic publications and their syncs.
+        // Dropping the async join waiter cannot admit a writer while either I/O is still running.
+        let _admission = admission;
+        publish()
+    })
+    .await
+    .context("join Current upgrade publication")?
+}
+
+fn registered_current<'a>(
+    threads: &'a BTreeMap<String, ThreadStatus>,
+    thread_id: &str,
+    directory: &Path,
+    directory_key: &str,
+) -> Result<Option<&'a RegisteredCurrentWriter>> {
+    // Physical identity catches aliases. The canonical name protects replacement in place.
+    for (owner, status) in threads {
+        let Some(registered) = &status.current else {
+            continue;
+        };
+        if registered.directory_key == directory_key || registered.writer.directory() == directory {
+            anyhow::ensure!(
+                owner == thread_id,
+                "current session directory {} is already registered for another Thread {owner}",
+                directory.display()
+            );
+            anyhow::ensure!(
+                registered.directory_key == directory_key,
+                "current Thread physical directory changed while registered: {}",
+                directory.display()
+            );
+            return Ok(Some(registered));
+        }
+    }
+    anyhow::ensure!(
+        threads
+            .get(thread_id)
+            .is_none_or(|status| status.current.is_none()),
+        "current Thread registered under another session directory"
+    );
+    Ok(None)
+}
+
 /// Records the terminal fact that one writer incarnation stopped while it still owed commits.
 ///
 /// Called under the Threads lock from `detach`, the one place that knows a writer task has actually
@@ -1383,6 +1457,87 @@ fn aggregate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn tool_result_current_migration_orders_registration_behind_the_same_admission()
+    -> Result<()> {
+        use pl_core::thread::current::{RuntimeEpoch, ThreadCurrent};
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join(crate::studio::paths::CURRENT_FILE_NAME);
+        let id = "current-admission";
+        let coordinator = ThreadPersistenceCoordinator::default();
+        let mut legacy = serde_json::to_value(ThreadCurrent::new(id.into(), RuntimeEpoch::new()))?;
+        legacy["schemaVersion"] = 1.into();
+        let legacy = serde_json::to_vec_pretty(&legacy)?;
+        std::fs::write(&path, &legacy)?;
+
+        let admission = coordinator.0.current_admission.lock().await;
+        {
+            let mut cancelled = std::pin::pin!(
+                coordinator.upgrade_current_for_recovery(id, temp.path().to_owned())
+            );
+            assert!(futures::poll!(&mut cancelled).is_pending());
+        }
+        assert_eq!(std::fs::read(&path)?, legacy);
+        let mut migration =
+            std::pin::pin!(coordinator.upgrade_current_for_recovery(id, temp.path().to_owned()));
+        assert!(futures::poll!(&mut migration).is_pending());
+        let mut registration = std::pin::pin!(async {
+            let writer = coordinator
+                .current_writer(id, temp.path().to_owned())
+                .await?;
+            ThreadCurrent::from_json(&std::fs::read(&path)?, id)?;
+            Ok::<_, anyhow::Error>(writer)
+        });
+        assert!(futures::poll!(&mut registration).is_pending());
+        drop(admission);
+        let (migrated, registered) = tokio::join!(migration, registration);
+        migrated?;
+        let writer = registered?;
+        assert_eq!(writer.directory(), dunce::canonicalize(temp.path())?);
+        assert_eq!(
+            std::fs::read(
+                temp.path()
+                    .join("migration-backups/current-tool-result-v1/current.original.json")
+            )?,
+            legacy
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn tool_result_current_publication_keeps_admission_after_join_waiter_is_cancelled()
+    -> Result<()> {
+        let coordinator = ThreadPersistenceCoordinator::default();
+        let temp = tempfile::tempdir()?;
+        let published = temp.path().join("publication-complete");
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let admission = coordinator.0.current_admission.clone().lock_owned().await;
+        let waiter = tokio::spawn(publish_current_upgrade(admission, {
+            let published = published.clone();
+            move || {
+                entered
+                    .send(())
+                    .map_err(|_| anyhow::anyhow!("missing publication observer"))?;
+                blocked.recv()?;
+                std::fs::write(&published, b"completed")?;
+                Ok(())
+            }
+        }));
+        tokio::time::timeout(std::time::Duration::from_secs(5), started).await??;
+        waiter.abort();
+        assert!(waiter.await.unwrap_err().is_cancelled());
+        assert!(coordinator.0.current_admission.try_lock().is_err());
+        assert!(!published.exists());
+
+        let registration = coordinator.current_writer("after-cancellation", temp.path().to_owned());
+        release.send(())?;
+        let _writer =
+            tokio::time::timeout(std::time::Duration::from_secs(5), registration).await??;
+        assert_eq!(std::fs::read(published)?, b"completed");
+        Ok(())
+    }
 
     fn history_report() -> ThreadPersistenceReport {
         ThreadPersistenceReport {

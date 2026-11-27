@@ -76,11 +76,12 @@ pub(crate) fn preview_workflow(
             format!("preview:{index}:{target}"),
             PREVIEW_TIME,
         )?;
-        if !result.accepted {
+        if let super::output::WorkflowMutationResponse::Rejected {
+            recovery_action, ..
+        } = result
+        {
             accepted = false;
-            message = result
-                .recovery_action
-                .unwrap_or_else(|| result.code.to_string());
+            message = recovery_action;
             break;
         }
         path.push(target);

@@ -2,7 +2,7 @@
 use serde_json::{Map, Value, json};
 use std::collections::BTreeSet;
 
-const TABLES: &[&str] = &[
+pub(super) const TABLES: &[&str] = &[
     "properties",
     "$defs",
     "definitions",
@@ -10,8 +10,8 @@ const TABLES: &[&str] = &[
     "dependentSchemas",
     "dependencies",
 ];
-const LISTS: &[&str] = &["oneOf", "anyOf", "allOf", "prefixItems"];
-const CHILDREN: &[&str] = &[
+pub(super) const LISTS: &[&str] = &["oneOf", "anyOf", "allOf", "prefixItems"];
+pub(super) const CHILDREN: &[&str] = &[
     "items",
     "additionalItems",
     "unevaluatedItems",

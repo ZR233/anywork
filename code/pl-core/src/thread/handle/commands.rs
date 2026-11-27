@@ -126,7 +126,7 @@ pub(in crate::thread) enum LoopEvent {
         tool_id: String,
         arguments: OpaquePayload,
         cancellation: CancellationToken,
-        reply: oneshot::Sender<Result<crate::tool::ToolOutput, ThreadError>>,
+        reply: oneshot::Sender<Result<ToolCompletion, ThreadError>>,
     },
     InstallRuntimeBundle(
         Box<RuntimeBundle>,

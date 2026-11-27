@@ -404,6 +404,7 @@ async fn runtime_replays_single_gemini_tool_with_empty_id_over_mock_http() {
                 reasoning_content: None,
                 tool_calls: None,
                 tool_result: Some(ToolResultRecord {
+                    data: Some(json!({"program": "not a Gemini result"})),
                     item_id: call.id.clone(),
                     call_id: call.call_id.clone(),
                     name: "lookup".into(),
@@ -840,6 +841,7 @@ async fn thread_gemini_replays_parallel_results_in_part_order_across_steps() {
     }]
     .into();
     let mut records = vec![ContextRecord {
+        tool_data: Default::default(),
         id: "input".into(),
         turn_id: Some("turn".into()),
         source: ContextSource::User,
@@ -899,6 +901,7 @@ async fn thread_gemini_replays_parallel_results_in_part_order_across_steps() {
             );
             assert!(internal_ids.insert(binding.call_id.clone()));
             results.push(ContextRecord {
+                tool_data: pl_agent_tool::ToolData::Value(json!({"query":query})),
                 id: format!("{attempt}:{query}"),
                 turn_id: Some("turn".into()),
                 source: ContextSource::ToolResult {
@@ -912,6 +915,7 @@ async fn thread_gemini_replays_parallel_results_in_part_order_across_steps() {
             });
         }
         records.push(ContextRecord {
+            tool_data: Default::default(),
             id: format!("{attempt}:output"),
             turn_id: Some("turn".into()),
             source: ContextSource::Assistant,

@@ -4,7 +4,7 @@ pub use crate::{PathInput, StatBackend};
 use pl_agent_tool::typed::TypedTool;
 use std::marker::PhantomData;
 
-#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct StatReceipt {
     pub path: String,
@@ -74,6 +74,8 @@ impl<B: StatBackend + 'static> TypedTool for StatPathTool<B> {
 pub fn definition<B: StatBackend + 'static>() -> pl_agent_tool::ToolDefinition {
     pl_agent_tool::typed::prepare_json::<StatPathTool<B>>()
         .expect("static file tool definition")
+        .with_output_schema()
+        .expect("static file output schema")
         .definition()
         .clone()
 }

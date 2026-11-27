@@ -1,8 +1,9 @@
 //! Restricted task capabilities; weak commands never keep their Thread alive.
 use super::*;
+use futures::future::select_all;
 use std::{
-    collections::{BTreeMap, VecDeque},
-    sync::RwLock,
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    sync::{RwLock, Weak},
     time::Duration,
 };
 
@@ -13,7 +14,7 @@ const COMPLETED_LEDGER_CAPACITY: usize = 256;
 pub(super) struct CompletedTaskLedger {
     order: VecDeque<String>,
     by_id: BTreeMap<String, cold::DurableToolTask>,
-    by_call_id: BTreeMap<String, cold::DurableToolTask>,
+    by_call_id: BTreeMap<String, String>,
 }
 
 impl CompletedTaskLedger {
@@ -23,25 +24,32 @@ impl CompletedTaskLedger {
         }
         let id = task.id.clone();
         let call_id = task.call_id.clone();
-        let entry = cold::DurableToolTask { task, delivery };
-        if !self.by_id.contains_key(&id) {
-            self.order.push_back(id.clone());
-            while self.order.len() > COMPLETED_LEDGER_CAPACITY {
-                if let Some(evicted_id) = self.order.pop_front()
-                    && let Some(removed) = self.by_id.remove(&evicted_id)
-                {
-                    self.by_call_id.remove(&removed.task.call_id);
-                }
+        if let Some(existing) = self.by_id.get_mut(&id) {
+            if existing.task == task && existing.delivery.is_none() {
+                existing.delivery = delivery;
             }
+            return;
         }
-        self.by_call_id.insert(call_id, entry.clone());
-        self.by_id.insert(id, entry);
+        self.order.push_back(id.clone());
+        if self.order.len() > COMPLETED_LEDGER_CAPACITY
+            && let Some(evicted_id) = self.order.pop_front()
+            && let Some(removed) = self.by_id.remove(&evicted_id)
+        {
+            self.by_call_id.remove(&removed.task.call_id);
+        }
+        self.by_call_id.insert(call_id, id.clone());
+        self.by_id
+            .insert(id, cold::DurableToolTask { task, delivery });
     }
 
     pub(super) fn get(&self, id: &str) -> Option<cold::DurableToolTask> {
         self.by_id
             .get(id)
-            .or_else(|| self.by_call_id.get(id))
+            .or_else(|| {
+                self.by_call_id
+                    .get(id)
+                    .and_then(|task_id| self.by_id.get(task_id))
+            })
             .cloned()
     }
 }
@@ -49,6 +57,7 @@ impl CompletedTaskLedger {
 /// A coherent wait result; pending messages remain unconsumed until model admission.
 #[derive(Debug, Clone)]
 pub struct TaskWaitSnapshot {
+    /// Known selected tasks in request order. A pending lookup can leave an identity unresolved.
     pub tasks: Vec<task::TaskRecord>,
     pub messages_ready: bool,
     pub user_inputs_ready: bool,
@@ -64,6 +73,9 @@ pub struct TaskAccess {
     snapshots: watch::Receiver<super::subscription::OwnerPublication>,
     effect_window: Arc<EffectWindow>,
     completed_tasks: Arc<RwLock<CompletedTaskLedger>>,
+    storage: Option<Weak<dyn cold::ErasedStorage>>,
+    thread_id: String,
+    cancellation: CancellationToken,
     commands: mpsc::WeakSender<handle::LoopEvent>,
     caller: String,
     may_wait: bool,
@@ -115,12 +127,14 @@ impl TaskAccess {
             .clone()
     }
     /// Dispatches through the original owner. No executor or grant crosses this capability.
+    /// A committed terminal fact includes failed and cancelled outcomes. An error means the call
+    /// could not be admitted or its completion could not be obtained from the owner.
     pub async fn call_nested(
         &self,
         tool_id: String,
         arguments: OpaquePayload,
         cancellation: CancellationToken,
-    ) -> Result<crate::tool::ToolOutput, ThreadError> {
+    ) -> Result<ToolCompletion, ThreadError> {
         if self.nested_catalog.is_empty() {
             return Err(ThreadError::ToolPermissionRevoked);
         }
@@ -160,6 +174,7 @@ impl TaskAccess {
         owner: &Owner,
         caller: &str,
         executor: &crate::tool::opaque::FrozenTool,
+        cancellation: CancellationToken,
     ) -> Self {
         let permissions = executor.task_permissions();
         Self {
@@ -168,6 +183,12 @@ impl TaskAccess {
             snapshots: owner.publish.subscribe(),
             effect_window: owner.effect_window.clone(),
             completed_tasks: owner.completed_tasks.clone(),
+            storage: owner
+                .cold
+                .as_ref()
+                .map(|storage| Arc::downgrade(&storage.0)),
+            thread_id: owner.id.clone(),
+            cancellation,
             commands: owner.task_commands.clone(),
             caller: format!("task:{caller}"),
             may_wait: permissions.wait,
@@ -376,6 +397,7 @@ impl TaskAccess {
     /// Rejects unknown tasks or an inconsistent terminal result reference.
     pub fn result(&self, id: &str) -> Result<Option<ToolDelivery>, ThreadError> {
         let snapshot = self.snapshots.borrow();
+        self.ensure_running(&snapshot)?;
         let task = snapshot
             .tasks
             .get(id)
@@ -390,10 +412,15 @@ impl TaskAccess {
         if task.status == task::TaskStatus::Running {
             return Ok(None);
         }
-        // A settled result is committed history. The resident queue answers a result still owed to
-        // model context; otherwise the exact committed delivery is read back from the bounded live
-        // effect window. Older results are answered by the host's calls reader (by
-        // `(thread_id, call_id)`), never by a checkpoint-visible payload ledger.
+        if let Some(delivery) = self
+            .completed(id)
+            .filter(|fact| fact.task.id == id)
+            .and_then(|fact| fact.delivery)
+        {
+            return Ok(Some(delivery));
+        }
+        // A result still owed to model context is resident. Unsaved results remain in the
+        // reliable effect window and older results are accessible through `durable`.
         let call_id = task.call_id.as_str();
         if let Some(delivery) = snapshot
             .deliveries
@@ -415,13 +442,88 @@ impl TaskAccess {
         }
     }
 
-    /// Reads a completed task fact from the owner's bounded in-memory ledger without database IO.
+    /// Reads a terminal task and its original delivery from the live window or attached History.
+    /// A missing identity remains unknown. No execution or delivery is repeated.
     pub async fn durable(&self, id: &str) -> Result<Option<cold::DurableToolTask>, ThreadError> {
-        let ledger = self
-            .completed_tasks
+        self.validate_execution().await?;
+        let cached = self.completed(id);
+        if cached.as_ref().is_some_and(|fact| fact.delivery.is_some()) {
+            return Ok(cached);
+        }
+        {
+            let snapshot = self.snapshots.borrow();
+            if let Some(task) = snapshot
+                .tasks
+                .get(id)
+                .or_else(|| snapshot.tasks.values().find(|task| task.call_id == id))
+                && task.status != task::TaskStatus::Running
+                && let Some(delivery) = snapshot
+                    .deliveries
+                    .iter()
+                    .find(|delivery| delivery.call_id == task.call_id)
+            {
+                return Ok(Some(cold::DurableToolTask {
+                    task: task.clone(),
+                    delivery: Some(delivery.clone()),
+                }));
+            }
+        }
+        if let Some(fact) = recent_effect_fact(&self.effect_window, |effect| {
+            let task = effect.tasks.iter().find(|task| {
+                task.status != task::TaskStatus::Running && (task.id == id || task.call_id == id)
+            })?;
+            let delivery = effect
+                .deliveries
+                .iter()
+                .find(|delivery| delivery.call_id == task.call_id)?;
+            Some(cold::DurableToolTask {
+                task: task.clone(),
+                delivery: Some(delivery.clone()),
+            })
+        }) {
+            return Ok(Some(fact));
+        }
+        let Some(storage) = self.storage.as_ref().and_then(Weak::upgrade) else {
+            return Ok(cached);
+        };
+        let saved = tokio::select! {
+            biased;
+            _ = self.cancellation.cancelled() => return Err(ThreadError::Cancelled),
+            read = storage.read_saved_tool_task(&self.thread_id, id) => read,
+        };
+        self.validate_execution().await?;
+        let saved = saved.map_err(|error| ThreadError::Storage(Arc::new(error)))?;
+        if let Some(fact) = &saved {
+            let task = &fact.task;
+            if (task.id != id && task.call_id != id)
+                || task.id != format!("task:{}", task.call_id)
+                || task.status == task::TaskStatus::Running
+                || task.invocation.as_ref().is_some_and(|invocation| {
+                    invocation.call_id != task.call_id || invocation.tool_id != task.tool_id
+                })
+                || fact.delivery.as_ref().is_some_and(|delivery| {
+                    delivery.call_id != task.call_id
+                        || delivery.tool_id != task.tool_id
+                        || task.status != task::TaskStatus::from_outcome(&delivery.outcome)
+                        || match &delivery.target {
+                            ToolDeliveryTarget::Nested { parent_call_id } => {
+                                task.parent_call_id.as_ref() != Some(parent_call_id)
+                            }
+                            _ => task.parent_call_id.is_some(),
+                        }
+                })
+            {
+                return Err(ThreadError::InvalidIdentity);
+            }
+        }
+        Ok(saved.or(cached))
+    }
+
+    fn completed(&self, id: &str) -> Option<cold::DurableToolTask> {
+        self.completed_tasks
             .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Ok(ledger.get(id))
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
     }
 
     /// Waits for any selected task to finish or for a pending Thread message.
@@ -429,9 +531,9 @@ impl TaskAccess {
     /// selected tasks. The readiness deadline is fixed on entry, including across unrelated wakes;
     /// the final observation always checks committed readiness before reporting a timeout.
     ///
-    /// Archived identities are resolved from the Thread's durable facts. Those reads must finish
-    /// (or fail) before returning a complete task snapshot; the readiness timeout does not fabricate
-    /// metadata when a storage read has not completed. Cancellation still interrupts the read.
+    /// While waiting for readiness, archived identities are resolved from the Thread's durable
+    /// facts. Readiness and the fixed deadline may return a snapshot with unresolved identities
+    /// omitted. A missing or unreadable original reported by storage is an error.
     ///
     /// # Errors
     /// Rejects missing or revoked permission, self-waits, stale callers, unknown tasks, an
@@ -455,6 +557,7 @@ impl TaskAccess {
         // Only immutable terminal facts are retained locally, for this wait alone. Live task and
         // inbox state always come from the same owner observation, never from a second registry.
         let mut archived = BTreeMap::new();
+        let mut lookups = BTreeMap::new();
         loop {
             if cancellation.is_cancelled() {
                 return Err(ThreadError::Cancelled);
@@ -468,9 +571,9 @@ impl TaskAccess {
                 let snapshot = snapshots.borrow_and_update();
                 self.ensure_running(&snapshot)?;
                 let mut tasks = Vec::with_capacity(ids.len());
-                let mut missing = Vec::new();
+                let mut missing = BTreeSet::new();
                 for id in ids {
-                    match snapshot
+                    let known = snapshot
                         .tasks
                         .get(id)
                         .or_else(|| {
@@ -479,10 +582,30 @@ impl TaskAccess {
                                 .iter()
                                 .find(|record| record.id == *id)
                         })
-                        .or_else(|| archived.get(id))
-                    {
-                        Some(task) => tasks.push(task.clone()),
-                        None => missing.push(id.clone()),
+                        .or_else(|| archived.get(id.as_str()))
+                        .cloned()
+                        .or_else(|| {
+                            self.completed(id)
+                                .map(|fact| fact.task)
+                                .filter(|task| task.id == *id)
+                        })
+                        .or_else(|| {
+                            recent_effect_fact(&self.effect_window, |effect| {
+                                effect
+                                    .tasks
+                                    .iter()
+                                    .rev()
+                                    .find(|task| {
+                                        task.id == *id && task.status != task::TaskStatus::Running
+                                    })
+                                    .cloned()
+                            })
+                        });
+                    match known {
+                        Some(task) => tasks.push(task),
+                        None => {
+                            missing.insert(id.as_str());
+                        }
                     }
                 }
 
@@ -514,56 +637,41 @@ impl TaskAccess {
                     ready,
                 )
             };
-            if !missing.is_empty() {
-                for id in missing {
-                    if archived.contains_key(&id) {
-                        continue;
-                    }
-                    let fact = {
-                        let read = self.durable(&id);
-                        tokio::pin!(read);
-                        loop {
-                            tokio::select! {
-                                    biased;
-                            _ = cancellation.cancelled() => return Err(ThreadError::Cancelled),
-                                    fact = &mut read => break fact?,
-                                    changed = snapshots.changed() => {
-                                        changed.map_err(|_| ThreadError::Closed)?;
-                                        tokio::select! {
-                                            biased;
-                                            _ = cancellation.cancelled() => return Err(ThreadError::Cancelled),
-                                            validated = self.validate_execution() => validated?,
-                                        }
-                                    }
-                                }
-                        }
-                    };
-                    tokio::select! {
-                                biased;
-                                _ = cancellation.cancelled() => return Err(ThreadError::Cancelled),
-                                validated = self.validate_execution() => validated?,
-                    }
-                    match fact {
-                        Some(fact) if fact.task.status != task::TaskStatus::Running => {
-                            archived.insert(id, fact.task);
-                        }
-                        // A durable Running row without a live owner task cannot be waited on.
-                        // In particular, neither a missing identity nor stale data becomes success.
-                        _ => return Err(ThreadError::TaskNotFound { task_id: id }),
-                    }
-                }
-                // Storage may have yielded while messages or live tasks changed. Re-read the
-                // owner, including the caller's authority, instead of returning the older snapshot.
-                continue;
-            }
-            if ready || observed.timed_out {
+            if ready {
                 return Ok(observed);
+            }
+            if self.storage.is_none()
+                && let Some(id) = ids.iter().find(|id| missing.contains(id.as_str()))
+            {
+                return Err(ThreadError::TaskNotFound {
+                    task_id: id.clone(),
+                });
+            }
+            if observed.timed_out {
+                return Ok(observed);
+            }
+            // Keep each in-flight lookup through unrelated publications. Drop reads when their
+            // identities become resident or when this wait returns.
+            lookups.retain(|id, _| missing.contains(id));
+            for id in missing {
+                lookups
+                    .entry(id)
+                    .or_insert_with(|| Box::pin(async move { (id, self.durable(id).await) }));
             }
             tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => return Err(ThreadError::Cancelled),
                 changed = snapshots.changed() => changed.map_err(|_| ThreadError::Closed)?,
                 _ = tokio::time::sleep_until(deadline) => {},
+                (id, fact) = async { select_all(lookups.values_mut()).await.0 }, if !lookups.is_empty() => {
+                    lookups.remove(id);
+                    match fact? {
+                        Some(fact) if fact.task.id == id && fact.task.status != task::TaskStatus::Running => {
+                            archived.insert(id, fact.task);
+                        }
+                        _ => return Err(ThreadError::TaskNotFound { task_id: id.into() }),
+                    }
+                }
             }
         }
     }

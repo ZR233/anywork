@@ -628,6 +628,7 @@ impl pl_core::thread::context_preparation::ContextPreparationHook for LifecycleH
                                 turn_id: None,
                                 source: pl_core::context::ContextSource::User,
                                 content: vec![text("rejected replacement")],
+                                tool_data: Default::default(),
                                 tool_calls: vec![],
                             }]
                         } else {
@@ -849,6 +850,7 @@ async fn force_and_host_share_one_operation_and_idle_does_not_borrow_an_old_turn
                         source_id: "history".into(),
                     },
                     content: vec![text("oversized committed history")],
+                    tool_data: Default::default(),
                     tool_calls: vec![],
                 }],
             })

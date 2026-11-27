@@ -15,7 +15,7 @@ pub struct WriteFileInput {
     pub mode: WriteMode,
 }
 
-#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WriteReceipt {
     pub path: String,
@@ -62,6 +62,8 @@ impl<B: WriteBackend + 'static> TypedTool for WriteFileTool<B> {
 pub fn definition<B: WriteBackend + 'static>() -> pl_agent_tool::ToolDefinition {
     pl_agent_tool::typed::prepare_json::<WriteFileTool<B>>()
         .expect("static file tool definition")
+        .with_output_schema()
+        .expect("static file output schema")
         .definition()
         .clone()
 }

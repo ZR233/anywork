@@ -105,10 +105,8 @@ pub(super) struct Owner {
     pub(super) nested_plans: std::collections::BTreeMap<String, NestedScope>,
     pub(super) executions:
         crate::tool::task::ExecutionTasks<super::tool_execution::ToolExecutionCompletion>,
-    pub(super) nested_replies: std::collections::BTreeMap<
-        String,
-        oneshot::Sender<Result<crate::tool::ToolOutput, ThreadError>>,
-    >,
+    pub(super) nested_replies:
+        std::collections::BTreeMap<String, oneshot::Sender<Result<ToolCompletion, ThreadError>>>,
     pub(super) interrupt: cancellation::InterruptHandle,
     pub(super) id: String,
     pub(super) model: Option<DynModelSession>,
@@ -1294,21 +1292,16 @@ impl Owner {
         } else {
             super::usage::fold_effect(&mut self.state.usage_summary, &effect);
         }
-        // Record settled tasks in the bounded in-memory ledger before retain_live_facts prunes deliveries.
+        // Only newly committed terminal revisions belong here. Republishing unrelated work must
+        // never overwrite an original delivery after retain_live_facts has pruned it.
         {
             let mut ledger = self
                 .completed_tasks
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for task in self
-                .state
-                .tasks
-                .values()
-                .chain(self.state.terminal_tasks.iter())
-            {
+            for task in effect.tasks.iter() {
                 if task.status != task::TaskStatus::Running {
-                    let delivery = self
-                        .state
+                    let delivery = effect
                         .deliveries
                         .iter()
                         .find(|d| d.call_id == task.call_id)

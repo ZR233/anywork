@@ -375,7 +375,7 @@ async fn observe_root_type(root: &Path) -> anyhow::Result<()> {
             call_context(CancellationToken::new()),
         )
         .await?;
-    ensure!(serde_json::from_str::<serde_json::Value>(missing.payload().content())?["count"] == 0);
+    ensure!(missing.data().expect("tool declares result data").clone()["count"] == 0);
     prepare_source(&skills)?;
     tool.execute(
         OpaquePayload::new("application/json", 1, "{}")?,

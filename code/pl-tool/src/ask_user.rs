@@ -128,13 +128,15 @@ impl pl_agent_tool::typed::TypedTool for AskUserTool {
             serde_json::to_string(&questions).map_err(pl_core::tool::opaque::ToolError::new)?;
         let payload = pl_core::context::OpaquePayload::new("pl.tool.user-input", 1, encoded)
             .map_err(pl_core::tool::opaque::ToolError::new)?;
-        Ok(pl_core::tool::ToolOutput::new(
-            payload.clone(),
-            vec![pl_core::context::ContextContent::Text {
-                text: std::sync::Arc::from("Waiting for the user's response."),
-            }],
+        Ok(
+            pl_core::tool::ToolOutput::new(pl_agent_tool::ToolResult::new(
+                pl_agent_tool::ToolData::Absent,
+                vec![pl_core::context::ContextContent::Text {
+                    text: "Waiting for the user's response.".into(),
+                }],
+            ))
+            .with_interaction(payload),
         )
-        .with_interaction(payload))
     }
 }
 

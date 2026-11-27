@@ -1,5 +1,6 @@
 //! Workspace and skill tools over ordinary authors and the original ACP execution owner.
 mod read;
+mod task_contract;
 
 use super::acp_host_mcp::{HostBinding, HostHandle, attach_binding, prepare_binding};
 use crate::studio::thread_factory::PreparedAcpWorkspace;
@@ -19,7 +20,7 @@ use pl_core::{
         task::{ExecutionIdentity, ExecutionSnapshot, ExecutionTasks},
     },
 };
-use pl_studio_mcp::HostResult;
+use pl_studio_mcp::{HostContent, HostResult};
 use pl_tool::{
     collaboration::control::{AgentCallContext, ControlError},
     invocation::{CommandTask, CommandTaskAccess, WorkspaceInvocation},
@@ -29,6 +30,7 @@ use std::{
     sync::{Arc, Mutex, Weak},
     time::Duration,
 };
+use task_contract::{QueryOutput, ResultPage, WaitInput, WaitOutput};
 use tokio_util::sync::CancellationToken;
 
 use crate::thread_assembler::host_workspace_tools::{
@@ -424,19 +426,18 @@ impl WorkspaceTools {
                 let reply: HostResult = serde_json::from_slice(&bytes).map_err(ControlError::service)?;
                 if let Some(error) = &output.archive_error {
                     return Ok(HostResult {
-                        value: serde_json::json!({"taskId":task_id,"output":reply.value,"resultArchiveError":error}),
+                        result: reply.result.with_appended_content(HostContent::Text(format!(
+                            "Result archive failed for task {task_id}: {error}. The observed result is retained by this owner; query the same task with anywork_get_tool_task. Do not repeat the operation."
+                        ))),
                         is_error: true,
-                        content: None,
                     });
                 }
                 Ok(reply)
             },
             _ = observer.cancelled() => Err(ControlError::Closed),
-            _ = tokio::time::sleep(self.foreground_handoff_timeout) => Ok(HostResult {
-                value: serde_json::json!({"taskId":task_id,"status":"running","message":"Execution is owned by this instance; observe with anywork_wait and anywork_get_tool_task."}),
-                is_error: false,
-                content: None,
-            }),
+            _ = tokio::time::sleep(self.foreground_handoff_timeout) => Ok(HostResult::json(
+                serde_json::json!({"taskId":task_id,"status":"running","message":"Execution is owned by this instance; observe with anywork_wait and anywork_get_tool_task."}), false,
+            )),
         }
     }
 
@@ -455,8 +456,13 @@ impl WorkspaceTools {
             Some(Err(_)) => TaskStatus::Failed,
         }
     }
-    fn view(&self, task: &ExecutionSnapshot) -> serde_json::Value {
-        serde_json::json!({"taskId":task.identity.task_id,"toolId":task.identity.tool_id,"status":self.status(task),"cancelRequested":task.cancel_requested})
+    fn view(&self, task: &ExecutionSnapshot) -> pl_tool::task_control::TaskStatusView {
+        pl_tool::task_control::TaskStatusView {
+            task_id: task.identity.task_id.clone(),
+            tool_id: task.identity.tool_id.clone(),
+            status: self.status(task),
+            cancel_requested: task.cancel_requested,
+        }
     }
     async fn control(
         &self,
@@ -464,22 +470,20 @@ impl WorkspaceTools {
         value: serde_json::Value,
         cancellation: CancellationToken,
     ) -> Result<serde_json::Value> {
-        use pl_tool::task_control::{
-            CancelTaskInput, ListTasksInput, QueryTaskInput, WaitTasksInput,
-        };
+        use pl_tool::task_control::{CancelTaskInput, ListTasksInput, QueryTaskInput};
         match operation {
             "list" => {
                 let _: ListTasksInput = serde_json::from_value(value)?;
-                Ok(serde_json::Value::Array(
+                Ok(serde_json::to_value(
                     self.tasks
                         .list()
                         .iter()
                         .map(|task| self.view(task))
-                        .collect(),
-                ))
+                        .collect::<Vec<_>>(),
+                )?)
             }
             "wait" => {
-                let input: WaitTasksInput = serde_json::from_value(value)?;
+                let input: WaitInput = serde_json::from_value(value)?;
                 let timeout = input.timeout_ms.unwrap_or(60_000);
                 anyhow::ensure!(
                     (1..=300_000).contains(&timeout),
@@ -493,9 +497,10 @@ impl WorkspaceTools {
                         cancellation,
                     )
                     .await?;
-                Ok(
-                    serde_json::json!({"tasks":tasks.iter().map(|task| self.view(task)).collect::<Vec<_>>(),"timedOut":timed_out}),
-                )
+                Ok(serde_json::to_value(WaitOutput {
+                    tasks: tasks.iter().map(|task| self.view(task)).collect(),
+                    timed_out,
+                })?)
             }
             "cancel" => {
                 let input: CancelTaskInput = serde_json::from_value(value)?;
@@ -508,7 +513,12 @@ impl WorkspaceTools {
                 let (mut task, lease) = self.tasks.get(&input.task_id)?;
                 let result = lease.result();
                 task.finished = result.is_some();
-                let mut value = serde_json::json!({"task":self.view(&task)});
+                let mut value = QueryOutput {
+                    task: self.view(&task),
+                    result: None,
+                    archive_error: None,
+                    output_repairs: Vec::new(),
+                };
                 if let Some(start) = input.result_cursor
                     && let Some(result) = result
                 {
@@ -523,10 +533,14 @@ impl WorkspaceTools {
                     while !text.is_char_boundary(end) {
                         end -= 1;
                     }
-                    value["result"] = serde_json::json!({"format":"pl.host.tool-result","version":1,"content":&text[start..end],"totalBytes":text.len(),"nextCursor":(end<text.len()).then_some(end)});
-                    if let Some(error) = &result.archive_error {
-                        value["archiveError"] = error.clone().into();
-                    }
+                    value.result = Some(ResultPage {
+                        format: "pl.host.tool-result".into(),
+                        version: 1,
+                        content: text[start..end].to_owned(),
+                        total_bytes: text.len(),
+                        next_cursor: (end < text.len()).then_some(end),
+                    });
+                    value.archive_error = result.archive_error.clone();
                 }
                 let repairs = self
                     .repairs
@@ -534,12 +548,10 @@ impl WorkspaceTools {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .iter()
                     .filter(|repair| repair.call_id == task.identity.call_id)
-                    .cloned()
+                    .map(task_contract::RepairView::from)
                     .collect::<Vec<_>>();
-                if !repairs.is_empty() {
-                    value["outputRepairs"] = serde_json::to_value(repairs)?;
-                }
-                Ok(value)
+                value.output_repairs = repairs;
+                Ok(serde_json::to_value(value)?)
             }
             _ => anyhow::bail!("unknown task control binding"),
         }
@@ -599,7 +611,7 @@ impl HostWorkspaceSink for McpWorkspaceSink<'_> {
             HostJsonInput::Value => pl_studio_mcp::JsonInput::Value,
         };
         Ok((
-            prepare_binding(self.tools, definition, input)?,
+            prepare_binding(self.tools, definition, input, false)?,
             definition.name().to_owned(),
             InvocationPolicy {
                 domain: metadata.domain,
@@ -642,8 +654,13 @@ struct McpTaskTools<'a> {
 
 impl McpTaskTools<'_> {
     fn add(&mut self, definition: ToolDefinition, operation: &'static str) -> Result<()> {
-        let projection =
-            prepare_binding(self.tools, &definition, pl_studio_mcp::JsonInput::Object)?;
+        let definition = task_contract::definition(definition, operation)?;
+        let projection = prepare_binding(
+            self.tools,
+            &definition,
+            pl_studio_mcp::JsonInput::Object,
+            true,
+        )?;
         let author = WorkspaceTaskTool {
             definition,
             owner: Arc::downgrade(self.owner),
@@ -706,7 +723,7 @@ impl Tool for WorkspaceTaskTool {
             .control(self.operation, input.decode()?, context.cancellation)
             .await
             .map_err(|error| ToolError::new(ControlError::Service(error.into_boxed_dyn_error())))?;
-        json_output("pl.host.tool-task", &value)
+        json_output(&value)
     }
 }
 

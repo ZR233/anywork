@@ -27,6 +27,51 @@ pub struct Output {
     pub results: Results,
     pub preview: String,
 }
+
+#[derive(Serialize, schemars::JsonSchema)]
+struct ProgramResult {
+    queries: Vec<String>,
+    responses: Vec<ProgramResponse>,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+struct ProgramResponse {
+    sources: Vec<SearchSource>,
+}
+
+pub fn output_schema() -> serde_json::Value {
+    schemars::generate::SchemaSettings::draft2020_12()
+        .for_serialize()
+        .into_generator()
+        .into_root_schema_for::<ProgramResult>()
+        .to_value()
+}
+
+impl Output {
+    pub fn into_result(self) -> Result<pl_agent_tool::ToolResult<String>, serde_json::Error> {
+        let (responses, raw): (Vec<_>, Vec<_>) = self
+            .results
+            .responses
+            .into_iter()
+            .map(|response| {
+                (
+                    ProgramResponse {
+                        sources: response.sources,
+                    },
+                    response.raw_response,
+                )
+            })
+            .unzip();
+        let data = serde_json::to_value(ProgramResult {
+            queries: self.results.queries,
+            responses,
+        })?;
+        Ok(
+            pl_agent_tool::ToolResult::from_data(data, vec![self.preview])
+                .with_details(serde_json::json!({"rawResponses": raw})),
+        )
+    }
+}
 #[derive(Debug, thiserror::Error)]
 pub enum SearchError<E: std::error::Error + 'static> {
     #[error("{0}")]

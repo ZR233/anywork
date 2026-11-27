@@ -109,8 +109,15 @@ fn retained_media_is_validated_before_model_admission() {
         AttachmentModality::Image,
     )
     .unwrap();
+    let ContextContent::Media { payload } = &content else {
+        panic!("attachment author must classify media explicitly");
+    };
+    let opaque = ContextContent::Opaque {
+        payload: payload.clone(),
+    };
     let mut model = ModelDefinition::compatible("media-admission");
     assert!(validate_attachment_content([&content], &model).is_err());
+    validate_attachment_content([&opaque], &model).unwrap();
     let mut capability =
         ModelInputCapability::media(ModelModality::Image, vec![ModelInputSource::Local]);
     capability.limits.max_count = Some(1);
@@ -166,6 +173,7 @@ async fn context_preview_includes_frozen_hosted_solo_tools_and_pending_input() {
         context: ContextSnapshot {
             revision: 2,
             records: vec![ContextRecord {
+                tool_data: Default::default(),
                 id: "retained".into(),
                 turn_id: None,
                 source: ContextSource::User,
@@ -217,6 +225,7 @@ async fn context_preview_includes_frozen_hosted_solo_tools_and_pending_input() {
     assert!(with_solo.tokens > with_hosted.tokens);
     let mut records = request.context.records.to_vec();
     records.push(ContextRecord {
+        tool_data: Default::default(),
         id: "pending-input".into(),
         turn_id: Some("pending-turn".into()),
         source: ContextSource::User,
@@ -1236,12 +1245,13 @@ impl pl_agent_tool::Tool for ReplayTool {
         );
         self.count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Ok(pl_core::tool::ToolOutput::new(
-            pl_core::context::OpaquePayload::text("replay-tool-marker"),
+        Ok(pl_core::tool::ToolOutput::from_data(
+            json!({"authorValue":"replay-tool-program-value"}),
             vec![ContextContent::Text {
                 text: Arc::from("replay-tool-marker"),
             }],
-        ))
+        )
+        .with_details(json!({"private":"replay-tool-details-marker"})))
     }
 }
 
@@ -1337,16 +1347,14 @@ async fn direct_tool_schema_is_omitted_and_replayed_without_reexecution() {
             .unwrap();
         let thread = ThreadHandle::start("schema-output".into(), session).unwrap();
         let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let definition = pl_agent_tool::ToolDefinition::json(
-            "exec",
-            "Read data",
-            json!({"type":"object"}),
-        )
-        .unwrap()
-        .with_output_schema(
-            json!({"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}),
-        )
-        .unwrap();
+        let definition =
+            pl_agent_tool::ToolDefinition::json("exec", "Read data", json!({"type":"object"}))
+                .unwrap()
+                .with_output_schema(json!({
+                    "type":"object","additionalProperties":false,
+                    "properties":{"authorValue":{"type":"string"}},"required":["authorValue"]
+                }))
+                .unwrap();
         let spec = pl_model::completion::tool_definition_to_spec(
             &definition,
             pl_model::completion::ToolCallPolicy::DirectOnly,
@@ -1368,6 +1376,17 @@ async fn direct_tool_schema_is_omitted_and_replayed_without_reexecution() {
             .await
             .unwrap();
         assert_eq!(first.outcome, TurnOutcome::Completed, "{protocol:?}");
+        let state = thread.snapshot();
+        let result = state
+            .context
+            .records
+            .iter()
+            .find(|record| matches!(record.source, ContextSource::ToolResult { .. }))
+            .unwrap();
+        assert_eq!(
+            result.tool_data.as_value(),
+            Some(&json!({"authorValue":"replay-tool-program-value"}))
+        );
         let resumed = thread
             .run_turn(replay_turn("resume schema history", Default::default()))
             .await
@@ -1389,10 +1408,17 @@ async fn direct_tool_schema_is_omitted_and_replayed_without_reexecution() {
                 .find(|item| {
                     item["type"] == "function_call_output" && item["call_id"] == "schema-call"
                 })
-                .unwrap()["output"]
-                .as_str()
                 .unwrap();
-            assert_eq!(output, "replay-tool-marker");
+            assert_eq!(
+                output,
+                &json!({
+                    "type":"function_call_output", "call_id":"schema-call",
+                    "output":[{"type":"input_text", "text":"replay-tool-marker"}]
+                })
+            );
+            let body = request.body.to_string();
+            assert!(!body.contains("replay-tool-program-value"));
+            assert!(!body.contains("replay-tool-details-marker"));
         }
     }
 }
@@ -1465,16 +1491,22 @@ async fn responses_functions_keep_optional_role_specific_arguments() {
 }
 
 #[tokio::test]
-async fn responses_schema_projection_preserves_content_and_program_caller() {
-    use pl_model::completion::ToolCallPolicy;
-    use pl_model::completion::ToolCallRecord;
-
-    let fixture = FixtureServer::start(vec![Step::prompt(
-        Protocol::ResponsesHttp,
-        "project outputs",
-        0,
-        Reply::Sse(responses_text("done", "projection-done", "gpt-6-luna")),
-    )])
+async fn responses_routes_author_data_only_to_hosted_result_carriers() {
+    use pl_model::completion::{ToolCallPolicy, ToolCallRecord};
+    let fixture = FixtureServer::start(
+        ["projection-done", "replay-done"]
+            .into_iter()
+            .enumerate()
+            .map(|(step, id)| {
+                Step::prompt(
+                    Protocol::ResponsesHttp,
+                    "project outputs",
+                    step,
+                    Reply::Sse(responses_text("done", id, "gpt-6-luna")),
+                )
+            })
+            .collect(),
+    )
     .await
     .unwrap();
     let mut endpoint = pl_model::protocol::providers::openai::endpoint(Some(fixture.base_url()));
@@ -1487,107 +1519,159 @@ async fn responses_schema_projection_preserves_content_and_program_caller() {
         .binding
         .set_transport(ModelTransportProfile::responses_http());
     let runtime = pl_model::runtime::new_with_account_id("fixture", endpoint, info).unwrap();
+    let object = json!({
+        "type":"object", "additionalProperties":false,
+        "properties":{"value":{"type":"integer"}}, "required":["value"]
+    });
+    let business_failure = json!({
+        "type":"object", "additionalProperties":false,
+        "properties":{"error":{"type":"string"}}, "required":["error"]
+    });
+    let array = json!({
+        "$schema":"https://json-schema.org/draft/2020-12/schema",
+        "$defs":{"element":{"type":"integer"}},
+        "type":"array", "items":{"$ref":"#/$defs/element"}
+    });
+    let schema_string = json!({"type":"string"});
+    let schema_null = json!({"type":"null"});
+    let empty_object = json!({"type":"object", "additionalProperties":false});
     let cases = [
         (
-            "object",
-            Some(json!({"type":"object","required":["value"]})),
+            ("object", "object"),
+            Some(&object),
+            Some(json!({"value":7})),
             true,
-            "{\"value\":7}",
-            None,
-            json!({"value":7}),
+            "{\"value\":99}",
+            json!({"data":{"value":7}}),
         ),
         (
-            "error_object",
-            Some(json!({"type":"object","required":["value"]})),
-            true,
-            "{\"error\":\"tool failed\"}",
-            None,
-            json!({"error":"tool failed"}),
-        ),
-        (
-            "array",
-            Some(json!({"type":"object"})),
-            true,
-            "[1,2]",
-            None,
-            json!({"content":[1,2]}),
-        ),
-        (
-            "failure",
-            Some(json!({"type":"object"})),
-            true,
-            "tool failed\nsource detail",
-            None,
-            json!({"content":"tool failed\nsource detail"}),
-        ),
-        (
-            "program",
-            None,
-            true,
-            "program result",
-            Some(ToolCallCaller::Program {
-                caller_id: "program-1".into(),
-            }),
-            json!({"content":"program result"}),
-        ),
-        (
-            "direct_schema",
-            Some(json!({"type":"object"})),
+            ("object_direct", "object"),
+            Some(&object),
+            Some(json!({"value":71})),
             false,
-            "unstructured schema tool output",
-            None,
+            "direct preview of object",
             Value::Null,
         ),
         (
-            "plain",
+            ("business_error", "business_error"),
+            Some(&business_failure),
+            Some(json!({"error":"tool failed"})),
+            true,
+            "diagnostics only",
+            json!({"data":{"error":"tool failed"}}),
+        ),
+        (
+            ("array", "array"),
+            Some(&array),
+            Some(json!([1, 2])),
+            true,
+            "[]",
+            json!({"data":[1,2]}),
+        ),
+        (
+            ("empty_array", "empty_array"),
+            Some(&array),
+            Some(json!([])),
+            true,
+            "[1,2]",
+            json!({"data":[]}),
+        ),
+        (
+            ("empty_object", "empty_object"),
+            Some(&empty_object),
+            Some(json!({})),
+            true,
+            "content",
+            json!({"data":{}}),
+        ),
+        (
+            ("null", "null"),
+            Some(&schema_null),
+            Some(Value::Null),
+            true,
+            "not null",
+            json!({"data":null}),
+        ),
+        (
+            ("string", "string"),
+            Some(&schema_string),
+            Some(json!("[1,2]")),
+            true,
+            "[3,4]",
+            json!({"data":"[1,2]"}),
+        ),
+        (
+            ("empty_string", "empty_string"),
+            Some(&schema_string),
+            Some(json!("")),
+            true,
+            "content",
+            json!({"data":""}),
+        ),
+        (
+            ("legacy", "legacy"),
+            Some(&object),
             None,
+            true,
+            "{\"value\":7}",
+            json!({"error":{"code":"tool_data_unavailable","message":"{\"value\":7}"}}),
+        ),
+        (
+            ("direct", "direct"),
+            None,
+            Some(json!({"secret":"program value"})),
             false,
-            "unstructured direct output",
-            None,
+            "plain model content",
             Value::Null,
         ),
     ];
-    let mut tools = Vec::new();
+    let mut tools = vec![ToolSpec::ProgrammaticToolCalling];
     let mut assistant = user("");
     assistant.role = MessageRole::Assistant;
     let mut calls = Vec::new();
     let mut outputs = Vec::new();
-    for (name, schema, programmatic, text, caller, _) in &cases {
-        let mut definition =
-            pl_agent_tool::ToolDefinition::json(*name, "lookup", json!({"type":"object"})).unwrap();
-        if let Some(schema) = schema {
-            definition = definition.with_output_schema(schema.clone()).unwrap();
+    for ((case, name), schema, data, program, text, _) in &cases {
+        if case == name {
+            let mut definition =
+                pl_agent_tool::ToolDefinition::json(*name, "lookup", json!({"type":"object"}))
+                    .unwrap();
+            if let Some(schema) = schema {
+                definition = definition.with_output_schema((*schema).clone()).unwrap();
+            }
+            // A requested programmatic policy alone must never synthesize a declaration.
+            tools.push(pl_model::completion::tool_definition_to_spec(
+                &definition,
+                ToolCallPolicy::DirectAndProgrammatic,
+            ));
         }
-        tools.push(pl_model::completion::tool_definition_to_spec(
-            &definition,
-            if *programmatic {
-                ToolCallPolicy::DirectAndProgrammatic
-            } else {
-                ToolCallPolicy::DirectOnly
-            },
-        ));
         calls.push(ToolCallRecord {
-            item_id: format!("item-{name}"),
-            call_id: format!("call-{name}"),
+            item_id: format!("item-{case}"),
+            call_id: format!("call-{case}"),
             name: (*name).into(),
             kind: ToolCallKind::Function,
             arguments: json!({}),
-            caller: caller.clone(),
+            caller: program.then(|| ToolCallCaller::Program {
+                caller_id: "program-1".into(),
+            }),
         });
         let mut output = user(text);
         output.role = MessageRole::Tool;
         output.tool_result = Some(ToolResultRecord {
-            item_id: format!("item-{name}"),
-            call_id: format!("call-{name}"),
+            item_id: format!("item-{case}"),
+            call_id: format!("call-{case}"),
             name: (*name).into(),
             kind: ToolCallKind::Function,
+            data: data.clone(),
         });
-        outputs.push(output);
+        // Exercise the persisted model shape as well as the live codec, especially Some(Null).
+        let restored: Message =
+            serde_json::from_value(serde_json::to_value(&output).unwrap()).unwrap();
+        assert_eq!(restored, output);
+        outputs.push(restored);
     }
     assistant.tool_calls = Some(calls);
     let mut messages = vec![user("project outputs"), assistant];
     messages.extend(outputs);
-    tools.push(ToolSpec::ProgrammaticToolCalling);
     let request = CompletionRequest::builder()
         .messages(messages)
         .tools(tools)
@@ -1599,57 +1683,80 @@ async fn responses_schema_projection_preserves_content_and_program_caller() {
         )
         .await
         .unwrap();
+    let replay = CompletionRequest::builder()
+        .input(serde_json::from_value(serde_json::to_value(&request.input).unwrap()).unwrap())
+        .build();
+    runtime
+        .complete(
+            replay,
+            ModelInvocationContext::in_memory(Default::default()),
+        )
+        .await
+        .unwrap();
     let records = fixture.finish().await.unwrap();
-    let input = records[0].body["input"].as_array().unwrap();
-    let declarations = records[0].body["tools"].as_array().unwrap();
-    for (name, schema, programmatic, original, caller, expected) in &cases {
+    let body = &records[0].body;
+    let replayed = &records[1].body;
+    // The replay has no current tools, so the prior call identities alone determine the input.
+    assert_eq!(replayed["input"], body["input"]);
+    assert!(replayed.get("tools").is_none());
+    let declarations = body["tools"].as_array().unwrap();
+    let outputs = body["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["type"] == "function_call_output")
+        .collect::<Vec<_>>();
+    assert_eq!(outputs.len(), cases.len());
+    for (((case, name), schema, _, program, text, expected), output) in cases.iter().zip(outputs) {
+        assert_eq!(output["call_id"], format!("call-{case}"));
         let declaration = declarations
             .iter()
             .find(|tool| tool["name"] == *name)
             .unwrap();
-
-        if *programmatic {
+        if let Some(schema) = schema {
+            let wire_schema = &declaration["output_schema"];
+            assert_eq!(wire_schema["type"], "object");
+            assert_eq!(wire_schema["additionalProperties"], false);
             assert_eq!(
-                declaration["output_schema"],
-                json!({"type":"object","additionalProperties":true})
+                wire_schema["oneOf"],
+                json!([{"required":["data"]},{"required":["error"]}])
             );
-        }
-        let output = input
-            .iter()
-            .find(|item| {
-                item["type"] == "function_call_output" && item["call_id"] == format!("call-{name}")
-            })
-            .unwrap();
-        let text = output["output"].as_str().unwrap();
-        if !*programmatic {
-            assert_eq!(text, *original);
+            let mut embedded = wire_schema["properties"]["data"].clone();
+            let embedded_fields = embedded.as_object_mut().unwrap();
+            let id = embedded_fields.remove("$id").unwrap();
+            assert!(id.as_str().unwrap().starts_with("https://anywork.invalid/"));
+            assert_eq!(
+                wire_schema["$schema"],
+                "https://json-schema.org/draft/2020-12/schema"
+            );
+            assert_eq!(embedded_fields["$schema"], wire_schema["$schema"]);
+            if schema.get("$schema").is_none() {
+                embedded_fields.remove("$schema");
+            }
+            assert_eq!(&embedded, *schema);
         } else {
-            assert_eq!(serde_json::from_str::<Value>(text).unwrap(), *expected);
+            assert!(declaration.get("allowed_callers").is_none());
+            assert!(declaration.get("output_schema").is_none());
         }
-        if caller.is_some() {
+        if *program {
+            assert_eq!(
+                serde_json::from_str::<Value>(output["output"].as_str().unwrap()).unwrap(),
+                *expected
+            );
             assert_eq!(
                 output["caller"],
                 json!({"type":"program","caller_id":"program-1"})
             );
         } else {
+            assert_eq!(
+                output,
+                &json!({
+                    "type":"function_call_output", "call_id":format!("call-{case}"),
+                    "output":[{"type":"input_text", "text":text}]
+                })
+            );
             assert!(output.get("caller").is_none());
         }
-        if let Some(schema) = schema {
-            let ToolSpec::Function { output_schema, .. } = request.tools.iter().find(|tool| matches!(tool, ToolSpec::Function { name: tool_name, .. } if tool_name.as_str() == *name)).unwrap() else { unreachable!() };
-            assert_eq!(output_schema.as_ref(), Some(schema));
-        }
-        let original_message = request
-            .input
-            .iter()
-            .filter_map(|item| item.as_message())
-            .find(|message| {
-                message
-                    .tool_result
-                    .as_ref()
-                    .is_some_and(|result| result.name == *name)
-            })
-            .unwrap();
-        assert_eq!(original_message.content.text_value(), *original);
     }
 }
 
@@ -1948,7 +2055,8 @@ async fn unknown_tool_batch_is_corrected_without_replaying_rejected_calls() {
             assert_eq!(
                 requests[2].body["input"],
                 json!([{
-                    "type":"function_call_output", "call_id":"good-call", "output":"replay-tool-marker",
+                    "type":"function_call_output", "call_id":"good-call",
+                    "output":[{"type":"input_text", "text":"replay-tool-marker"}],
                 }])
             );
         } else {
@@ -2657,6 +2765,7 @@ async fn terminal_replay_completes_missing_items_and_rejects_conflicting_authori
             role: MessageRole::Tool,
             content: MessageContent::text(format!("result for {}", call.call_id)),
             tool_result: Some(ToolResultRecord {
+                data: None,
                 item_id: call.id.clone(),
                 call_id: call.call_id.clone(),
                 name: call.name.clone(),
@@ -2784,6 +2893,7 @@ async fn responses_replay_strips_output_only_status_for_strict_input() {
             role: MessageRole::Tool,
             content: MessageContent::text(format!("docs for {}", call.call_id)),
             tool_result: Some(ToolResultRecord {
+                data: None,
                 item_id: call.id.clone(),
                 call_id: call.call_id.clone(),
                 name: call.name.clone(),
@@ -3627,6 +3737,7 @@ async fn apply_patch_freeform_declares_custom_grammar_for_native_responses() {
             context: ContextSnapshot {
                 revision: 1,
                 records: vec![ContextRecord {
+                    tool_data: Default::default(),
                     id: "patch-input".into(),
                     turn_id: Some("patch-turn".into()),
                     source: ContextSource::User,
@@ -3982,11 +4093,54 @@ async fn xai_responses_preserves_effort_cache_scope_and_function_schema() {
 
 #[tokio::test]
 async fn attempt_scoped_calls_replay_original_ids_for_responses_and_chat() {
+    use base64::Engine;
     use pl_core::{
-        context::{ContextRecord, ContextSnapshot},
+        context::{
+            ContextRecord, ContextSnapshot, ResourceAccess, ResourceReadError, ResourceReader,
+            ResourceReference,
+        },
         model::{ModelRequest, ModelToolDeclaration, ToolCallMode},
     };
-    use pl_model::runtime::{ThreadModel, model_response_receipt, thread_tool_declaration};
+    use pl_model::{
+        model::{
+            MediaRepresentation, MediaWireFormat, ModelInputCapability, ModelInputSource,
+            ModelMediaInputProfile, ModelModality,
+        },
+        runtime::{
+            ThreadModel, attachment_content, model_response_receipt, thread_tool_declaration,
+        },
+    };
+
+    #[derive(Debug)]
+    struct RetainedImage(Arc<[u8]>);
+    impl ResourceReader for RetainedImage {
+        async fn read(
+            &self,
+            reference: ResourceReference,
+            _: CancellationToken,
+        ) -> Result<Arc<[u8]>, ResourceReadError> {
+            assert_eq!(reference.id(), "lookup-image");
+            Ok(self.0.clone())
+        }
+    }
+
+    let png = tiny_png();
+    let image_url = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(&png)
+    );
+    let image = attachment_content(
+        ResourceReference::new(
+            "lookup-image".into(),
+            pl_core::context::content_hash(&png),
+            png.len() as u64,
+            "image/png".into(),
+        )
+        .unwrap(),
+        AttachmentModality::Image,
+    )
+    .unwrap();
+    let resources = ResourceAccess::new(RetainedImage(png.into()));
 
     for (protocol, transport) in [
         (
@@ -4019,12 +4173,13 @@ async fn attempt_scoped_calls_replay_original_ids_for_responses_and_chat() {
                 ])
             }
         };
+        let media_prompt = "Image from view_image call call_0: lookup-image";
         let fixture = FixtureServer::start(vec![
             Step::prompt(protocol, "repeated identity", 0, tool_reply(1)),
-            Step::prompt(protocol, "repeated identity", 1, tool_reply(2)),
+            Step::prompt(protocol, media_prompt, 1, tool_reply(2)),
             Step::prompt(
                 protocol,
-                "repeated identity",
+                media_prompt,
                 2,
                 Reply::Sse(if responses {
                     responses_text("done", "last-response", "identity-model")
@@ -4035,13 +4190,35 @@ async fn attempt_scoped_calls_replay_original_ids_for_responses_and_chat() {
         ])
         .await
         .unwrap();
+        let mut info = model("identity-model", transport);
+        info.extra
+            .capabilities
+            .input
+            .push(ModelInputCapability::media(
+                ModelModality::Image,
+                vec![ModelInputSource::Local],
+            ));
+        info.extra
+            .binding
+            .request
+            .media
+            .push(ModelMediaInputProfile {
+                modality: ModelModality::Image,
+                wire: if responses {
+                    MediaWireFormat::ResponsesInputImage
+                } else {
+                    MediaWireFormat::ChatImageUrl
+                },
+                first_send: vec![MediaRepresentation::DataUrl],
+                replay: vec![MediaRepresentation::DataUrl],
+            });
         let runtime = pl_model::runtime::new_with_account_id(
             "fixture",
             pl_model::protocol::providers::openai::compatible_endpoint(
                 "fixture",
                 fixture.base_url(),
             ),
-            model("identity-model", transport),
+            info,
         )
         .unwrap();
         let mut session =
@@ -4065,6 +4242,7 @@ async fn attempt_scoped_calls_replay_original_ids_for_responses_and_chat() {
         }]
         .into();
         let mut records = vec![ContextRecord {
+            tool_data: Default::default(),
             id: "user-input".into(),
             turn_id: Some("turn".into()),
             source: ContextSource::User,
@@ -4095,7 +4273,7 @@ async fn attempt_scoped_calls_replay_original_ids_for_responses_and_chat() {
                     tool_call_mode: ToolCallMode::Parallel,
                     solo_tool_ids: Default::default(),
                     committed_private_context: None,
-                    resources: None,
+                    resources: Some(resources.clone()),
                     cancellation: Default::default(),
                     progress: None,
                     members: None,
@@ -4214,6 +4392,7 @@ async fn attempt_scoped_calls_replay_original_ids_for_responses_and_chat() {
                 }
             );
             records.push(ContextRecord {
+                tool_data: Default::default(),
                 id: format!("{attempt}:output"),
                 turn_id: Some("turn".into()),
                 source: ContextSource::Assistant,
@@ -4221,6 +4400,11 @@ async fn attempt_scoped_calls_replay_original_ids_for_responses_and_chat() {
                 tool_calls: output.tool_calls,
             });
             records.push(ContextRecord {
+                tool_data: if index == 0 {
+                    pl_agent_tool::ToolData::Value(json!({"value":7}))
+                } else {
+                    Default::default()
+                },
                 id: format!("result-{index}"),
                 turn_id: Some("turn".into()),
                 source: ContextSource::ToolResult {
@@ -4232,6 +4416,10 @@ async fn attempt_scoped_calls_replay_original_ids_for_responses_and_chat() {
                 }],
                 tool_calls: vec![],
             });
+            if index == 0 {
+                records.last_mut().unwrap().content.push(image.clone());
+            }
+            records = serde_json::from_slice(&serde_json::to_vec(&records).unwrap()).unwrap();
             for mutation in ["record-source", "result-reference"] {
                 let mut invalid_records = records.clone();
                 let length = invalid_records.len();
@@ -4255,7 +4443,7 @@ async fn attempt_scoped_calls_replay_original_ids_for_responses_and_chat() {
                     tool_call_mode: ToolCallMode::Parallel,
                     solo_tool_ids: Default::default(),
                     committed_private_context: None,
-                    resources: None,
+                    resources: Some(resources.clone()),
                     cancellation: Default::default(),
                     progress: None,
                     members: None,
@@ -4273,6 +4461,28 @@ async fn attempt_scoped_calls_replay_original_ids_for_responses_and_chat() {
         let body = &captured[2].body;
         if responses {
             let input = body["input"].as_array().unwrap();
+            let result_position = input
+                .iter()
+                .position(|item| item["type"] == "function_call_output")
+                .unwrap();
+            assert_eq!(input[result_position + 1]["role"], "user");
+            assert_eq!(
+                input[result_position + 1]["content"][1]["type"],
+                "input_image"
+            );
+            assert_eq!(
+                input[result_position + 1]["content"][1]["image_url"],
+                image_url
+            );
+            assert_eq!(
+                input
+                    .iter()
+                    .filter_map(|item| item["content"].as_array())
+                    .flatten()
+                    .filter(|part| part["type"] == "input_image")
+                    .count(),
+                1
+            );
             assert_eq!(
                 input
                     .iter()
@@ -4302,7 +4512,12 @@ async fn attempt_scoped_calls_replay_original_ids_for_responses_and_chat() {
                 assert_eq!(results[index]["call_id"], "call_0");
                 let output: Value =
                     serde_json::from_str(results[index]["output"].as_str().unwrap()).unwrap();
-                assert_eq!(output, json!({"content":format!("result-{}", index + 1)}));
+                let expected = if index == 0 {
+                    json!({"data":{"value":7}})
+                } else {
+                    json!({"error":{"code":"tool_data_unavailable","message":"result-2"}})
+                };
+                assert_eq!(output, expected);
                 assert_eq!(
                     results[index]["caller"]["caller_id"],
                     format!("program-{}", index + 1)
@@ -4310,6 +4525,19 @@ async fn attempt_scoped_calls_replay_original_ids_for_responses_and_chat() {
             }
         } else {
             let messages = body["messages"].as_array().unwrap();
+            let result_position = messages
+                .iter()
+                .position(|message| message["role"] == "tool")
+                .unwrap();
+            assert_eq!(messages[result_position + 1]["role"], "user");
+            assert_eq!(
+                messages[result_position + 1]["content"][1]["type"],
+                "image_url"
+            );
+            assert_eq!(
+                messages[result_position + 1]["content"][1]["image_url"]["url"],
+                image_url
+            );
             let calls = messages
                 .iter()
                 .filter_map(|message| message["tool_calls"].as_array())
@@ -4383,6 +4611,7 @@ async fn chat_tool_result_replays_the_provider_item_id_on_the_next_step() {
         role: MessageRole::Tool,
         content: MessageContent::text("entry found"),
         tool_result: Some(ToolResultRecord {
+            data: None,
             item_id: first.tool_calls[0].id.clone(),
             call_id: first.tool_calls[0].call_id.clone(),
             name: "lookup".into(),
@@ -4764,6 +4993,8 @@ async fn openai_hosted_search_and_native_custom_programmatic_tools_use_responses
         ToolSpec::ProgrammaticToolCalling,
         pl_model::completion::tool_definition_to_spec(
             &pl_agent_tool::ToolDefinition::json("lookup", "Look up", json!({"type":"object"}))
+                .unwrap()
+                .with_output_schema(json!({"type":"string"}))
                 .unwrap(),
             pl_model::completion::ToolCallPolicy::DirectAndProgrammatic,
         ),
@@ -5287,6 +5518,7 @@ async fn native_checkpoint_replay_requires_bound_origin_and_explicit_model_famil
                 context: ContextSnapshot {
                     revision: 1,
                     records: vec![ContextRecord {
+                        tool_data: Default::default(),
                         id: "input".into(),
                         turn_id: Some("origin-turn".into()),
                         source: ContextSource::User,
@@ -5345,6 +5577,7 @@ async fn native_checkpoint_replay_requires_bound_origin_and_explicit_model_famil
     let mut legacy_context = ContextSnapshot {
         revision: 3,
         records: vec![ContextRecord {
+            tool_data: Default::default(),
             id: "compaction:origin-attempt".into(),
             turn_id: None,
             source: ContextSource::Runtime {
@@ -5412,6 +5645,7 @@ async fn native_checkpoint_replay_requires_bound_origin_and_explicit_model_famil
     let future_context = ContextSnapshot {
         revision: 4,
         records: vec![ContextRecord {
+            tool_data: Default::default(),
             id: "compaction:origin-attempt".into(),
             turn_id: None,
             source: ContextSource::Runtime {
@@ -5452,6 +5686,7 @@ async fn native_checkpoint_replay_requires_bound_origin_and_explicit_model_famil
     let mismatched_context = ContextSnapshot {
         revision: 3,
         records: vec![ContextRecord {
+            tool_data: Default::default(),
             id: "compaction:origin-attempt".into(),
             turn_id: None,
             source: ContextSource::Runtime {
@@ -5560,6 +5795,7 @@ async fn instruction_snapshots_use_only_jointly_declared_endpoint_and_model_sema
             .await
             .unwrap();
         let base = ContextRecord {
+            tool_data: Default::default(),
             id: "initial-instructions".into(),
             turn_id: None,
             source: ContextSource::Instruction,
@@ -5581,6 +5817,7 @@ async fn instruction_snapshots_use_only_jointly_declared_endpoint_and_model_sema
                 let state = thread.snapshot();
                 let mut records = state.context.records.to_vec();
                 records.push(ContextRecord {
+                    tool_data: Default::default(),
                     id: "instruction-revision".into(),
                     turn_id: None,
                     source: ContextSource::InstructionSnapshot {
@@ -5683,6 +5920,7 @@ async fn instruction_snapshot_revision_and_hash_are_validated_before_admission()
     ));
     let mut session = factory.open_session().await.unwrap();
     let snapshot = |revision: u64, content_hash: String, replaces: Option<String>| ContextRecord {
+        tool_data: Default::default(),
         id: format!("snapshot-{revision}"),
         turn_id: None,
         source: ContextSource::InstructionSnapshot {
@@ -5772,6 +6010,7 @@ async fn appended_full_snapshot_keeps_tool_scheduling_rules_and_stable_prefix() 
                 revision: 1,
                 records: vec![
                     ContextRecord {
+                        tool_data: Default::default(),
                         id: "instruction".into(),
                         turn_id: None,
                         source: ContextSource::Instruction,
@@ -5781,6 +6020,7 @@ async fn appended_full_snapshot_keeps_tool_scheduling_rules_and_stable_prefix() 
                         tool_calls: vec![],
                     },
                     ContextRecord {
+                        tool_data: Default::default(),
                         id: "input".into(),
                         turn_id: Some("turn".into()),
                         source: ContextSource::User,
@@ -5790,6 +6030,7 @@ async fn appended_full_snapshot_keeps_tool_scheduling_rules_and_stable_prefix() 
                         tool_calls: vec![],
                     },
                     ContextRecord {
+                        tool_data: Default::default(),
                         id: "snapshot".into(),
                         turn_id: None,
                         source: ContextSource::InstructionSnapshot {
@@ -5871,6 +6112,7 @@ async fn deepseek_responses_replaces_instruction_prefix_instead_of_appending() {
                 revision: 1,
                 records: vec![
                     ContextRecord {
+                        tool_data: Default::default(),
                         id: "instruction".into(),
                         turn_id: None,
                         source: ContextSource::Instruction,
@@ -5880,6 +6122,7 @@ async fn deepseek_responses_replaces_instruction_prefix_instead_of_appending() {
                         tool_calls: vec![],
                     },
                     ContextRecord {
+                        tool_data: Default::default(),
                         id: "input".into(),
                         turn_id: Some("turn".into()),
                         source: ContextSource::User,
@@ -5889,6 +6132,7 @@ async fn deepseek_responses_replaces_instruction_prefix_instead_of_appending() {
                         tool_calls: vec![],
                     },
                     ContextRecord {
+                        tool_data: Default::default(),
                         id: "snapshot".into(),
                         turn_id: None,
                         source: ContextSource::InstructionSnapshot {
@@ -6206,6 +6450,7 @@ async fn stable_cache_hint_keeps_diagnostics_separate_from_changed_instructions(
                     revision: index + 1,
                     records: vec![
                         ContextRecord {
+                            tool_data: Default::default(),
                             id: "instructions".into(),
                             turn_id: None,
                             source: ContextSource::Instruction,
@@ -6215,6 +6460,7 @@ async fn stable_cache_hint_keeps_diagnostics_separate_from_changed_instructions(
                             tool_calls: vec![],
                         },
                         ContextRecord {
+                            tool_data: Default::default(),
                             id: format!("input-{index}"),
                             turn_id: Some(format!("turn-{index}")),
                             source: ContextSource::User,
@@ -6302,6 +6548,7 @@ async fn compaction_keeps_recent_execution_proof_without_reexecuting_the_tool() 
             expected_revision: 0,
             reason: ContextReplacementReason::Rebuild,
             records: vec![ContextRecord {
+                tool_data: Default::default(),
                 id: "delegated-task".into(),
                 turn_id: None,
                 source: ContextSource::AgentMessage {
@@ -6406,7 +6653,7 @@ async fn compaction_keeps_recent_execution_proof_without_reexecuting_the_tool() 
             .iter()
             .any(|item| item["type"] == "function_call_output"
                 && item["call_id"] == "proof-call"
-                && item["output"] == "replay-tool-marker")
+                && item["output"] == json!([{"type":"input_text", "text":"replay-tool-marker"}]))
     );
 }
 
@@ -6556,6 +6803,7 @@ async fn native_capacity_preview_keeps_measured_lower_bound_and_requires_bound_p
         context: ContextSnapshot {
             revision: 1,
             records: vec![ContextRecord {
+                tool_data: Default::default(),
                 id: "old-input".into(),
                 turn_id: Some("old-turn".into()),
                 source: ContextSource::User,
@@ -6615,6 +6863,7 @@ async fn native_capacity_preview_keeps_measured_lower_bound_and_requires_bound_p
     request.tool_call_mode = ToolCallMode::Parallel;
     thread.close().await.unwrap();
     records.push(ContextRecord {
+        tool_data: Default::default(),
         id: "new-input".into(),
         turn_id: Some("new-turn".into()),
         source: ContextSource::User,

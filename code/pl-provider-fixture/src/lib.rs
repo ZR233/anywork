@@ -1,6 +1,7 @@
 //! An ordered, loopback-only provider wire fixture shared by integration tests and GUI runs.
 
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     net::SocketAddr,
     num::NonZeroUsize,
@@ -4581,7 +4582,7 @@ fn canonical_script_path(path: &str) -> String {
     path.to_owned()
 }
 
-const INVALID_FUNCTION_OUTPUT: &str = "Invalid function_call_output.output: expected a JSON string because the function declares output_schema.";
+const INVALID_FUNCTION_OUTPUT: &str = "Invalid function_call_output.output: expected a JSON string or a content array because the function declares output_schema.";
 
 #[derive(Debug)]
 enum MatchError {
@@ -4589,9 +4590,11 @@ enum MatchError {
     InvalidFunctionOutput,
 }
 
-// The real Responses service treats output_schema as a promise that the function
-// output is a string containing JSON. Only validate calls whose declaration and
-// identity are visible; the fixture does not implement arbitrary JSON Schema.
+// Responses output_schema describes JSON encoded in string outputs; it does not
+// describe content-array outputs. See the official Responses create reference:
+// https://developers.openai.com/api/reference/resources/responses/methods/create
+// Only check that boundary for visible declarations and call identities. This
+// fixture does not validate arbitrary JSON Schema or all content-block fields.
 fn invalid_schema_function_output(body: &Value, script: &ScriptState) -> bool {
     let items = body.get("input").and_then(Value::as_array);
     let declarations = body
@@ -4663,10 +4666,11 @@ fn invalid_schema_function_output(body: &Value, script: &ScriptState) -> bool {
                 .and_then(Value::as_str)
                 .and_then(|id| calls.get(id))
                 .is_some_and(|name| schema_tools.contains(name))
-            && item
-                .get("output")
-                .and_then(Value::as_str)
-                .is_none_or(|output| serde_json::from_str::<Value>(output).is_err())
+            && match item.get("output") {
+                Some(Value::String(output)) => serde_json::from_str::<Value>(output).is_err(),
+                Some(Value::Array(_)) => false,
+                _ => true,
+            }
     })
 }
 
@@ -5272,8 +5276,8 @@ fn tool_images_pending(
             return None;
         }
         previous_result = Some(position);
-        let output = result["output"].as_str()?;
-        let selected_receipt = image_receipt_matches(output, &image.png_sha256);
+        let output = responses_output_text(&result["output"])?;
+        let selected_receipt = image_receipt_matches(&output, &image.png_sha256);
         if output.is_empty() || selected_receipt {
             let label = format!(
                 "Image from view_image call {}: pl.studio.resource:{}",
@@ -5472,7 +5476,7 @@ fn tool_running_receipt(call_id: &str) -> String {
 /// Task identity comes from the exact wire call's accepted receipt. The provider call id
 /// is intentionally independent of the runtime's attempt-qualified task identity.
 fn running_task_id(body: &Value, call_id: &str) -> Option<String> {
-    parse_running_receipt(direct_tool_output(body, call_id)?)
+    parse_running_receipt(&direct_tool_output(body, call_id)?)
 }
 
 fn parse_running_receipt(text: &str) -> Option<String> {
@@ -5490,26 +5494,10 @@ fn parse_running_receipt(text: &str) -> Option<String> {
 /// foreground terminal result or its own background terminal delivery. Running
 /// receipts are never treated as completion, even when another task wakes wait.
 fn tool_scroll_pending(body: &Value, call_ids: &[String]) -> Option<Vec<String>> {
-    let items = body
-        .get("input")
-        .or_else(|| body.get("messages"))?
-        .as_array()?;
     let mut pending = Vec::new();
     for call_id in call_ids {
-        let output = items.iter().find_map(|item| {
-            if item.get("type").and_then(Value::as_str) == Some("function_call_output")
-                && item.get("call_id").and_then(Value::as_str) == Some(call_id)
-            {
-                item.get("output").and_then(Value::as_str)
-            } else if item.get("role").and_then(Value::as_str) == Some("tool")
-                && item.get("tool_call_id").and_then(Value::as_str) == Some(call_id)
-            {
-                item.get("content").and_then(Value::as_str)
-            } else {
-                None
-            }
-        })?;
-        if exec_result_is_terminal(output) {
+        let output = direct_tool_output(body, call_id)?;
+        if exec_result_is_terminal(&output) {
             continue;
         }
         let task_id = running_task_id(body, call_id)?;
@@ -5662,20 +5650,7 @@ pub fn observed_tool_output(body: &Value, call_id: &str) -> Option<String> {
         }
         return Some(selected.join("\n"));
     }
-    body.get("input")
-        .or_else(|| body.get("messages"))?
-        .as_array()?
-        .iter()
-        .rev()
-        .find_map(|item| {
-            if item["type"] == "function_call_output" && item["call_id"] == call_id {
-                item["output"].as_str().map(str::to_owned)
-            } else if item["role"] == "tool" && item["tool_call_id"] == call_id {
-                item["content"].as_str().map(str::to_owned)
-            } else {
-                None
-            }
-        })
+    direct_tool_output(body, call_id).map(Cow::into_owned)
 }
 
 /// Whether the request carries the committed tool output for `call_id`.
@@ -5689,7 +5664,7 @@ fn direct_tool_output_contains(body: &Value, call_id: &str, marker: &str) -> boo
     direct_tool_output(body, call_id).is_some_and(|output| output.contains(marker))
 }
 
-fn direct_tool_output<'a>(body: &'a Value, call_id: &str) -> Option<&'a str> {
+fn direct_tool_output<'a>(body: &'a Value, call_id: &str) -> Option<Cow<'a, str>> {
     body.get("input")
         .or_else(|| body.get("messages"))?
         .as_array()?
@@ -5697,13 +5672,30 @@ fn direct_tool_output<'a>(body: &'a Value, call_id: &str) -> Option<&'a str> {
         .rev()
         .find_map(|item| {
             if item["type"] == "function_call_output" && item["call_id"] == call_id {
-                item["output"].as_str()
+                responses_output_text(&item["output"])
             } else if item["role"] == "tool" && item["tool_call_id"] == call_id {
-                item["content"].as_str()
+                item["content"].as_str().map(Cow::Borrowed)
             } else {
                 None
             }
         })
+}
+
+/// Reads text from a Responses output string or its ordered `input_text` blocks.
+/// Media stays in the original request; this observation does not decode tool data.
+pub fn responses_output_text(output: &Value) -> Option<Cow<'_, str>> {
+    match output {
+        Value::String(text) => Some(Cow::Borrowed(text)),
+        Value::Array(parts) => Some(Cow::Owned(
+            parts
+                .iter()
+                .filter(|part| part["type"] == "input_text")
+                .filter_map(|part| part["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )),
+        _ => None,
+    }
 }
 
 /// Flattens scenario-owned text so one diagnostic fact stays one log line.

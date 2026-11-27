@@ -132,7 +132,7 @@ mod tests {
                             .rev()
                             .flat_map(|record| record.content.iter().rev())
                             .find_map(|content| match content {
-                                ContextContent::Opaque { payload } => {
+                                ContextContent::Media { payload } => {
                                     pl_model::runtime::decode_attachment(payload).unwrap()
                                 }
                                 _ => None,
@@ -263,7 +263,7 @@ mod tests {
             .iter()
             .find(|delivery| delivery.tool_id == "view_image")
             .unwrap();
-        let receipt = pl_tool::image::saved_view_image_receipt(viewed.output.payload())?.unwrap();
+        let receipt = pl_tool::image::saved_view_image_receipt(viewed.output.details())?.unwrap();
         assert_eq!((receipt.model_width, receipt.model_height), (4, 2));
         assert_eq!(receipt.path, "capture.png");
         let reopened = FileResourceStore::new(resource_root);
@@ -278,7 +278,7 @@ mod tests {
             .delivered_context
             .iter()
             .find_map(|content| match content {
-                ContextContent::Opaque { payload } => {
+                ContextContent::Media { payload } => {
                     pl_model::runtime::decode_attachment(payload).unwrap()
                 }
                 _ => None,
@@ -295,7 +295,7 @@ mod tests {
             .find(|delivery| delivery.tool_id == "show_files")
             .unwrap();
         let display =
-            pl_tool::file_display::saved_file_display_receipt(shown.output.payload())?.unwrap();
+            pl_tool::file_display::saved_file_display_receipt(shown.output.details())?.unwrap();
         assert_eq!(display.files.len(), 1);
         assert!(
             matches!(&display.files[0], pl_tool::file_display::FileDisplayResult::Ready {
