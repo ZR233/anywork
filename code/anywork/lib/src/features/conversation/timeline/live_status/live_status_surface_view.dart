@@ -276,7 +276,6 @@ class _WorkingCard extends StatelessWidget {
           expanded: expanded,
           meta: duration,
           metaKey: const ValueKey('conversation-activity-trailing-meta'),
-          tooltip: null,
           semanticsLabel: duration == null ? label : '$label，$duration',
         );
       },
@@ -342,7 +341,6 @@ class _CompactingRow extends StatelessWidget {
           expandable: false,
           meta: duration,
           metaKey: const ValueKey('conversation-activity-trailing-meta'),
-          tooltip: duration == null ? label : '$label，$duration',
           semanticsLabel: duration == null ? label : '$label，$duration',
         );
       },
@@ -366,7 +364,6 @@ class _ReconnectingRow extends StatelessWidget {
             reconnecting.maxAttempts,
           )
         : l10n.liveStatusConnectionReconnecting;
-    final detail = reconnecting.message.trim();
     return _RetryCountdown(
       retryAfterMs: reconnecting.retryAfterMs,
       now: now,
@@ -385,8 +382,12 @@ class _ReconnectingRow extends StatelessWidget {
           expandable: false,
           meta: retryMeta,
           metaKey: const ValueKey('conversation-activity-trailing-meta'),
-          tooltip: detail.isEmpty ? label : detail,
-          semanticsLabel: retryMeta == null ? label : '$label，$retryMeta',
+          semanticsLabel: {
+            label,
+            if (reconnecting.message.trim().isNotEmpty)
+              reconnecting.message.trim(),
+            ?retryMeta,
+          }.join('\n'),
         );
       },
     );
@@ -426,7 +427,6 @@ class _StoppingRow extends StatelessWidget {
           expandable: false,
           meta: duration,
           metaKey: const ValueKey('conversation-activity-trailing-meta'),
-          tooltip: duration == null ? label : '$label，$duration',
           semanticsLabel: duration == null ? label : '$label，$duration',
         );
       },
@@ -507,7 +507,6 @@ class _AlertRow extends StatelessWidget {
       emphasized: true,
       header: true,
       expandable: false,
-      tooltip: label,
       semanticsLabel: label,
     );
   }

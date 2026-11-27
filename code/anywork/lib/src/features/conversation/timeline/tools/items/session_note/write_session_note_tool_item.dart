@@ -42,10 +42,8 @@ class WriteSessionNoteToolItem extends StructuredTimelineToolAdapter {
       );
 
   @override
-  ToolRowTarget rowTarget(
-    AppLocalizations l10n,
-    TimelineToolPresentation item,
-  ) => (label: l10n.timelineSessionNoteName, tooltip: null);
+  String? rowTarget(AppLocalizations l10n, TimelineToolPresentation item) =>
+      l10n.timelineSessionNoteName;
 
   @override
   List<ToolDetailValue> input(AppLocalizations l10n, String text) => toolField(

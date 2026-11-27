@@ -49,28 +49,17 @@ class SendMessageToolItem extends StructuredTimelineToolAdapter {
       );
 
   @override
-  ToolRowTarget rowTarget(
-    AppLocalizations l10n,
-    TimelineToolPresentation item,
-  ) {
-    final recipient = toolAgentRowTarget(item).label;
+  String? rowTarget(AppLocalizations l10n, TimelineToolPresentation item) {
+    final recipient = toolAgentRowTarget(item);
     final arguments = decodeJsonObject(item.arguments);
     final rawMessage = jsonStringValue(arguments['message']);
     final excerpt = toolCompactExcerpt(rawMessage);
-    final label = switch ((recipient, excerpt)) {
+    return switch ((recipient, excerpt)) {
       (final who?, final what?) => '$who · $what',
       (final who?, null) => who,
       (null, final what?) => what,
       (null, null) => null,
     };
-    final fullMessage = toolFirstLine(rawMessage);
-    final tooltip = switch ((recipient, fullMessage)) {
-      (final who?, final what?) => '$who · $what',
-      (final who?, null) => who,
-      (null, final what?) => what,
-      (null, null) => null,
-    };
-    return (label: label, tooltip: tooltip);
   }
 
   @override

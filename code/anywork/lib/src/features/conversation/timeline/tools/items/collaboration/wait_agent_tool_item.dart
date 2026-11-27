@@ -45,10 +45,8 @@ class WaitAgentToolItem extends StructuredTimelineToolAdapter {
       );
 
   @override
-  ToolRowTarget rowTarget(
-    AppLocalizations l10n,
-    TimelineToolPresentation item,
-  ) => toolAgentRowTarget(item);
+  String? rowTarget(AppLocalizations l10n, TimelineToolPresentation item) =>
+      toolAgentRowTarget(item);
 
   @override
   List<ToolDetailValue> input(AppLocalizations l10n, String text) {

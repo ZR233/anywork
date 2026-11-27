@@ -1532,7 +1532,6 @@ Widget conversationLiveStatusMemberDetailsExpandedPreview() {
                 expandable: true,
                 expanded: expanded,
                 meta: '执行了 38 秒',
-                tooltip: null,
               );
             },
             bodyBuilder: (context) => Column(

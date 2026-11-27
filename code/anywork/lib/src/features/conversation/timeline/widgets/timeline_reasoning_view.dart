@@ -109,7 +109,10 @@ class TimelineReasoningView extends StatelessWidget {
                 kind: ActivityDurationKind.elapsed,
               )
             : null;
-        final semantics = meta == null ? label : '$label，$meta';
+        final semantics = [
+          meta == null ? label : '$label，$meta',
+          ?diagnostic,
+        ].join('\n');
         Widget title(BuildContext context, bool expanded) =>
             TimelineActivityRow(
               icon: outcome == 'cancelled'
@@ -125,7 +128,6 @@ class TimelineReasoningView extends StatelessWidget {
                       ? TimelineReasoningSummary(text: summary!)
                       : null),
               meta: meta,
-              tooltip: diagnostic,
               semanticsLabel: semantics,
               expanded: expanded,
               expandable: body != null,

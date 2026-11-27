@@ -129,10 +129,7 @@ class LspQueryToolItem extends StructuredTimelineToolAdapter {
   }
 
   @override
-  ToolRowTarget rowTarget(
-    AppLocalizations l10n,
-    TimelineToolPresentation item,
-  ) {
+  String? rowTarget(AppLocalizations l10n, TimelineToolPresentation item) {
     final args = decodeJsonObject(item.arguments);
     final filePath = toolFirstLine(jsonStringValue(args['filePath']));
     final line = switch (args['line']) {
@@ -141,31 +138,20 @@ class LspQueryToolItem extends StructuredTimelineToolAdapter {
       final String s => int.tryParse(s.trim()),
       _ => null,
     };
-    final character = switch (args['character']) {
-      final int n => n,
-      final num n => n.toInt(),
-      final String s => int.tryParse(s.trim()),
-      _ => null,
-    };
     if (filePath != null) {
       final shortName = toolPathBasename(filePath) ?? filePath;
       final lineSuffix = (line != null && line > 0) ? ':$line' : '';
-      final fullCoord = (line != null && line > 0)
-          ? (character != null && character > 0
-                ? ':$line:$character'
-                : ':$line')
-          : '';
-      return (label: '$shortName$lineSuffix', tooltip: '$filePath$fullCoord');
+      return '$shortName$lineSuffix';
     }
     final query = toolFirstLine(jsonStringValue(args['query']));
     if (query != null) {
-      return (label: query, tooltip: query);
+      return query;
     }
     final languageId = toolFirstLine(jsonStringValue(args['languageId']));
     if (languageId != null) {
-      return (label: languageId, tooltip: languageId);
+      return languageId;
     }
-    return (label: null, tooltip: null);
+    return null;
   }
 
   @override

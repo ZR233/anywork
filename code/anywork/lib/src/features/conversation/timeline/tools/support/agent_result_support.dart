@@ -48,7 +48,7 @@ String? compactAgentTargetLabel(String? raw) {
 
 /// Extracts a human-readable collaboration target label from [item] arguments
 /// and output without exposing raw `thread-xxxx` IDs on the collapsed row.
-ToolRowTarget toolAgentRowTarget(
+String? toolAgentRowTarget(
   TimelineToolPresentation item, {
   List<String> readableKeys = defaultAgentReadableKeys,
   List<String> idKeys = defaultAgentIdKeys,
@@ -67,7 +67,7 @@ ToolRowTarget toolAgentRowTarget(
     for (final map in sources) {
       final value = toolFirstLine(jsonStringValue(map[key]));
       if (value != null && !isRawThreadIdentifier(value)) {
-        return (label: value, tooltip: value);
+        return value;
       }
     }
   }
@@ -78,11 +78,11 @@ ToolRowTarget toolAgentRowTarget(
       if (raw == null) continue;
       final compact = compactAgentTargetLabel(raw);
       if (compact != null) {
-        return (label: compact, tooltip: compact);
+        return compact;
       }
     }
   }
-  return (label: null, tooltip: null);
+  return null;
 }
 
 /// Truncates a single-line excerpt for compact primary-row display.

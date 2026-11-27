@@ -114,7 +114,6 @@ class ConversationResponseView extends StatelessWidget {
           header: true,
           expandable: false,
           meta: spec.meta,
-          tooltip: spec.tooltip,
         );
       },
     ),

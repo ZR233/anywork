@@ -335,7 +335,6 @@ class _AcpEmbeddedTextResource extends StatelessWidget {
         meta: mimeType,
         expanded: expanded,
         expandable: true,
-        tooltip: uri,
       ),
       children: [
         StudioCodeBlock(

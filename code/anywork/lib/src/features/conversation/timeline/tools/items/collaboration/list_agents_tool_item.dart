@@ -48,14 +48,10 @@ class ListAgentsToolItem extends StructuredTimelineToolAdapter {
       );
 
   @override
-  ToolRowTarget rowTarget(
-    AppLocalizations l10n,
-    TimelineToolPresentation item,
-  ) {
+  String? rowTarget(AppLocalizations l10n, TimelineToolPresentation item) {
     final count = _extractAgentCount(item.output);
-    if (count == null) return (label: null, tooltip: null);
-    final label = '($count)';
-    return (label: label, tooltip: null);
+    if (count == null) return null;
+    return '($count)';
   }
 
   static int? _extractAgentCount(String rawOutput) {

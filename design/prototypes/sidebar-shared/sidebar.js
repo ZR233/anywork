@@ -761,7 +761,7 @@
             class="sb-slot sb-pin-badge"
             data-sb-action="toggle-pin-thread"
             data-thread-id="${escape(thread.id)}"
-            title="已置顶 · 点击取消置顶"
+            title="取消置顶"
             aria-label="取消置顶 ${escape(title)}">
             ${lucideIcon('pin')}
           </button>`
@@ -913,7 +913,7 @@
               <div class="sb-thread-list" role="group">
                 ${displayRows.length
                   ? displayRows.map(t => this.renderThreadRow(t, proj)).join('')
-                  : `<div class="sb-empty-note">${this.isFiltered ? '无匹配会话' : '暂无会话，点击项目右侧 + 开始'}</div>`
+                  : `<div class="sb-empty-note">${this.isFiltered ? '无匹配会话' : '暂无会话'}</div>`
                 }
                 ${hiddenCount > 0 ? `
                   <button
@@ -1338,7 +1338,7 @@
       this.dialogEl.innerHTML = `
         <form method="dialog" class="sb-dialog-form">
           <h3>重命名会话</h3>
-          <p>更新侧边栏与会话顶栏共享的显示标题（最多 80 个字符）。</p>
+          <p>最多 80 个字符。</p>
           <div class="sb-field-label">
             <span>会话标题</span>
             <span class="sb-char-count">${currentTitle.length} / 80</span>
@@ -1485,16 +1485,16 @@
         this.dialogEl.innerHTML = `
           <form class="sb-add-proj-form">
             <h3>添加项目</h3>
-            <p>打开本地代码目录，或通过 ~/.ssh/config 连接远程开发主机目录。</p>
+
 
             <div class="sb-choice-grid" role="radiogroup" aria-label="项目位置类型">
               <button type="button" class="sb-choice-card ${!w.remote ? 'is-selected' : ''}" data-loc-mode="local">
                 <strong>${lucideIcon('laptop')}本地项目</strong>
-                <small>直接选择本机文件夹</small>
+
               </button>
               <button type="button" class="sb-choice-card ${w.remote ? 'is-selected' : ''}" data-loc-mode="remote">
                 <strong>${lucideIcon('server')}远程项目 (SSH)</strong>
-                <small>复用 SSH 主机与远端目录</small>
+
               </button>
             </div>
 

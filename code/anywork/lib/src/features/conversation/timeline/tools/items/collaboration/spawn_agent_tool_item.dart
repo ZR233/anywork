@@ -63,12 +63,9 @@ class SpawnAgentToolItem extends StructuredTimelineToolAdapter {
       );
 
   @override
-  ToolRowTarget rowTarget(
-    AppLocalizations l10n,
-    TimelineToolPresentation item,
-  ) {
+  String? rowTarget(AppLocalizations l10n, TimelineToolPresentation item) {
     final direct = super.rowTarget(l10n, item);
-    if (direct.label != null && !isRawThreadIdentifier(direct.label!)) {
+    if (direct != null && !isRawThreadIdentifier(direct)) {
       return direct;
     }
     return toolAgentRowTarget(

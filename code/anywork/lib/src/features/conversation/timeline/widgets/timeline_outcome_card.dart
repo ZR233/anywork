@@ -766,7 +766,6 @@ class TimelineModelRecoveryStatus extends StatelessWidget {
         TimelineActivityRow(
           label: label,
           icon: Icons.refresh_rounded,
-          tooltip: label,
           expandable: false,
         ),
         Padding(

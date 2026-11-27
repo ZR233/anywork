@@ -179,7 +179,7 @@ void main() {
   });
 
   testWidgets(
-    'ReasoningMemberItem renders markdown summary, duration, and clean tooltip',
+    'ReasoningMemberItem renders markdown summary, duration, and clean semantics',
     (tester) async {
       await tester.pumpWidget(
         _host(
@@ -216,9 +216,8 @@ void main() {
         find.byType(TimelineActivityRow),
       );
       expect(row.label, 'Phase A Phase B');
-      expect(row.tooltip, isNull);
-      final tooltip = tester.widget<Tooltip>(find.byType(Tooltip));
-      expect(tooltip.message, 'Phase A Phase B\n用时 2 秒');
+      expect(row.semanticsLabel, 'Phase A Phase B，用时 2 秒');
+      expect(find.byType(Tooltip), findsNothing);
 
       await tester.tap(find.byType(TimelineActivityRow));
       await tester.pumpAndSettle();

@@ -33,7 +33,6 @@ TimelineToolRowSummary buildWaitToolRowSummary(
       preserveWhenStopped: true,
     ),
     label: rowLabel,
-    tooltip: subtitle,
     active: waiting && !context.staticObservation,
     isIssue: failed,
     isStopped: false,

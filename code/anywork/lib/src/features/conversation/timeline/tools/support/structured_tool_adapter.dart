@@ -53,22 +53,16 @@ abstract class StructuredTimelineToolAdapter extends TimelineToolItemAdapter {
   ToolAcceptanceProjection acceptanceFromResult(Object? result) =>
       const ToolAcceptanceProjection(ToolAcceptance.pending);
 
-  /// Extracts compact display target and full hover tooltip from arguments.
-  ToolRowTarget rowTarget(
-    AppLocalizations l10n,
-    TimelineToolPresentation item,
-  ) {
+  /// Extracts the compact display target from arguments.
+  String? rowTarget(AppLocalizations l10n, TimelineToolPresentation item) {
     final arguments = decodeJsonObject(item.arguments);
     for (final key in targetFields) {
       final value = toolFirstLine(jsonStringValue(arguments[key]));
       if (value != null) {
-        return (
-          label: fileTarget ? toolPathBasename(value) : value,
-          tooltip: value,
-        );
+        return fileTarget ? toolPathBasename(value) : value;
       }
     }
-    return (label: null, tooltip: null);
+    return null;
   }
 
   /// Composes the single-line row headline from acceptance, lifecycle status,
@@ -143,18 +137,17 @@ abstract class StructuredTimelineToolAdapter extends TimelineToolItemAdapter {
     final l10n = context.l10n;
     final item = context.item;
     final acceptance = context.controller.acceptance;
-    final targets = rowTarget(l10n, item);
+    final target = rowTarget(l10n, item);
     final elapsed = showsElapsedDuration ? toolElapsed(item) : null;
     final active = isTimelineToolActive(item.statusString);
     final label = item.frozenObservation
         ? l10n.timelineToolArchivedUnfinished
         : !item.executionPresent && active
         ? l10n.timelineToolNotResumed
-        : rowLabel(l10n, item, targets.label, acceptance: acceptance);
+        : rowLabel(l10n, item, target, acceptance: acceptance);
     return TimelineToolRowSummary(
       icon: buildIcon(context),
       label: label,
-      tooltip: targets.tooltip,
       meta: elapsed == null
           ? null
           : activityDurationLabel(context.buildContext, elapsed.inSeconds),

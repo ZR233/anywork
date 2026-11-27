@@ -36,7 +36,6 @@ class TimelineActivityRow extends StatelessWidget {
     this.indicatorStyle = TimelineActivityIndicatorStyle.restingCat,
     this.expanded = false,
     this.expandable = true,
-    this.tooltip,
     this.semanticsLabel,
     this.meta,
     this.metaKey,
@@ -81,7 +80,7 @@ class TimelineActivityRow extends StatelessWidget {
   /// 类目语义图标；为空且无 [leading] / [isIssue] 时不渲染前导图标列（例如活动组总折叠行）。
   final IconData? icon;
 
-  /// 单行文案；过长在行内省略，完整内容由 [tooltip] 提供。
+  /// 单行文案；过长在行内省略，完整内容通过展开或正文阅读入口提供。
   final String label;
   final Key? labelKey;
 
@@ -108,7 +107,6 @@ class TimelineActivityRow extends StatelessWidget {
   /// 是否存在可展开内容；没有内容时不显示箭头。
   final bool expandable;
 
-  final String? tooltip;
   final String? semanticsLabel;
   final String? meta;
   final Key? metaKey;
@@ -265,11 +263,11 @@ class TimelineActivityRow extends StatelessWidget {
         },
       ),
     );
-    final accessibleLabel = {label, ?tooltip, ?meta}.join('\n');
-    row = Tooltip(message: accessibleLabel, child: row);
-    if (semanticsLabel case final semanticText?) {
-      row = Semantics(label: semanticText, excludeSemantics: true, child: row);
-    }
+    row = Semantics(
+      label: semanticsLabel ?? {label, ?meta}.join('\n'),
+      excludeSemantics: true,
+      child: row,
+    );
     return ColoredBox(color: Colors.transparent, child: row);
   }
 }

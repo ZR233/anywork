@@ -46,11 +46,8 @@ class EvaluateAgentToolItem extends StructuredTimelineToolAdapter {
       );
 
   @override
-  ToolRowTarget rowTarget(
-    AppLocalizations l10n,
-    TimelineToolPresentation item,
-  ) {
-    final targetLabel = toolAgentRowTarget(item).label;
+  String? rowTarget(AppLocalizations l10n, TimelineToolPresentation item) {
+    final targetLabel = toolAgentRowTarget(item);
     final arguments = decodeJsonObject(item.arguments);
     final output = decodeJsonObject(item.output);
     final evaluation = jsonObject(output['evaluation']);
@@ -59,20 +56,12 @@ class EvaluateAgentToolItem extends StructuredTimelineToolAdapter {
         jsonStringValue(evaluation['comment']) ??
         jsonStringValue(output['summary']);
     final excerpt = toolCompactExcerpt(rawComment);
-    final label = switch ((targetLabel, excerpt)) {
+    return switch ((targetLabel, excerpt)) {
       (final who?, final note?) => '$who · $note',
       (final who?, null) => who,
       (null, final note?) => note,
       (null, null) => null,
     };
-    final fullComment = toolFirstLine(rawComment);
-    final tooltip = switch ((targetLabel, fullComment)) {
-      (final who?, final note?) => '$who · $note',
-      (final who?, null) => who,
-      (null, final note?) => note,
-      (null, null) => null,
-    };
-    return (label: label, tooltip: tooltip);
   }
 
   @override

@@ -158,17 +158,8 @@ void main() {
         find.byKey(const ValueKey('live-work-header:thread-1')),
       );
       expect(headerRow.label, 'Header Summary');
-      expect(headerRow.tooltip, isNull);
-      final headerTooltip = tester.widget<Tooltip>(
-        find
-            .ancestor(
-              of: find.byKey(const ValueKey('live-work-summary:thread-1')),
-              matching: find.byType(Tooltip),
-            )
-            .first,
-      );
-      expect(headerTooltip.message, isNot(contains('**')));
-      expect(headerTooltip.message!.split('\n').length, lessThanOrEqualTo(2));
+      expect(headerRow.semanticsLabel, isNot(contains('**')));
+      expect(find.byType(Tooltip), findsNothing);
     },
   );
 
@@ -229,11 +220,18 @@ void main() {
     await tester.pumpWidget(_host(_project(retry('first failure'))));
     expect(find.text('思考中'), findsNothing);
     final element = tester.element(row);
-    expect(tester.widget<TimelineActivityRow>(row).tooltip, 'first failure');
+    expect(
+      tester.widget<TimelineActivityRow>(row).semanticsLabel,
+      contains('first failure'),
+    );
+    expect(find.byType(Tooltip), findsNothing);
 
     await tester.pumpWidget(_host(_project(retry('second failure'))));
     expect(tester.element(row), same(element));
-    expect(tester.widget<TimelineActivityRow>(row).tooltip, 'second failure');
+    expect(
+      tester.widget<TimelineActivityRow>(row).semanticsLabel,
+      contains('second failure'),
+    );
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
 
     await tester.pumpWidget(

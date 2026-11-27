@@ -322,7 +322,7 @@ void main() {
   );
 
   testWidgets(
-    'TimelineReasoningView normalizes **** and avoids duplicate tooltip',
+    'TimelineReasoningView normalizes **** and avoids duplicate semantics',
     (tester) async {
       await tester.pumpWidget(
         _host(
@@ -338,10 +338,9 @@ void main() {
         find.byType(TimelineActivityRow),
       );
       expect(row.label, 'First Second');
-      expect(row.tooltip, isNull);
+      expect(row.semanticsLabel, 'First Second，用时 3 秒');
       expect(find.text('用时 3 秒'), findsOneWidget);
-      final tooltip = tester.widget<Tooltip>(find.byType(Tooltip));
-      expect(tooltip.message, 'First Second\n用时 3 秒');
+      expect(find.byType(Tooltip), findsNothing);
       await tester.pumpWidget(const SizedBox());
     },
   );

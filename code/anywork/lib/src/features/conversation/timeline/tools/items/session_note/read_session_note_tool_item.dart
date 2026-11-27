@@ -38,10 +38,8 @@ class ReadSessionNoteToolItem extends StructuredTimelineToolAdapter {
       );
 
   @override
-  ToolRowTarget rowTarget(
-    AppLocalizations l10n,
-    TimelineToolPresentation item,
-  ) => (label: l10n.timelineSessionNoteName, tooltip: null);
+  String? rowTarget(AppLocalizations l10n, TimelineToolPresentation item) =>
+      l10n.timelineSessionNoteName;
 
   @override
   List<ToolDetailValue> output(AppLocalizations l10n, Object? result) =>

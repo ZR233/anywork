@@ -56,18 +56,13 @@ class ExecToolItem extends StructuredTimelineToolAdapter {
       );
 
   @override
-  ToolRowTarget rowTarget(
-    AppLocalizations l10n,
-    TimelineToolPresentation item,
-  ) {
+  String? rowTarget(AppLocalizations l10n, TimelineToolPresentation item) {
     final direct = super.rowTarget(l10n, item);
-    if (direct.label != null) return direct;
+    if (direct != null) return direct;
     final arguments = decodeJsonObject(item.arguments);
     final nested = jsonObject(arguments['args']);
-    final fallback =
-        toolFirstLine(jsonStringValue(nested['command'])) ??
+    return toolFirstLine(jsonStringValue(nested['command'])) ??
         toolFirstLine(jsonStringValue(arguments['code']));
-    return fallback == null ? direct : (label: fallback, tooltip: fallback);
   }
 
   @override
@@ -84,7 +79,6 @@ class ExecToolItem extends StructuredTimelineToolAdapter {
     return TimelineToolRowSummary(
       icon: base.icon,
       label: base.label,
-      tooltip: base.tooltip,
       meta: meta,
       active: base.active,
       isIssue: base.isIssue,
