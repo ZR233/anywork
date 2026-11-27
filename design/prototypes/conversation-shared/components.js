@@ -213,7 +213,7 @@
           type="button"
           class="cv-read-thumb"
           role="listitem"
-          title="点击查看大图"
+          title="查看大图"
           aria-label="查看大图：${escape(label)}">
           <img src="${escape(img.url)}" alt="${escape(label)}">
         </button>
@@ -547,7 +547,7 @@
       const body = element.querySelector('.cv-group-rail');
       const explanation = item.error || (item.subject === '上下文压缩'
         ? '上下文压缩已停止，原始历史保持不变。'
-        : item.subject === '模型响应' ? '等待模型响应已停止，可以通过主按钮继续。'
+        : item.subject === '模型响应' ? '等待模型响应已停止。'
         : '本次执行已停止，已保留停止前生成的内容。');
       body.append(
         node(`<div class="cv-detail-meta">${escape(item.subject)}</div>`),
@@ -582,7 +582,7 @@
             <button
               type="button"
               class="cv-att-thumb-btn is-history-thumb"
-              title="${escape(img.name)} · 点击弹层查看大图"
+              title="${escape(img.name)}"
               aria-label="查看图片大图 ${escape(img.name)}">
               <img src="${escape(img.url)}" alt="${escape(img.name)}">
               <span class="cv-att-thumb-zoom" aria-hidden="true">${icon('zoom-in')}</span>
@@ -674,7 +674,7 @@
         options.append(label);
       });
       this.node.append(options);
-      const other = node(`<label class="cv-field-label">补充说明（可选）<input class="cv-text-input" type="text" value="${escape(pending.others[pending.index])}" placeholder="也可以写下你的补充要求"></label>`);
+      const other = node(`<label class="cv-field-label">补充说明（可选）<input class="cv-text-input" type="text" value="${escape(pending.others[pending.index])}"></label>`);
       other.querySelector('input').addEventListener('input', event => controller.pendingText('other', event.target.value));
       this.node.append(other);
       if (question.secret) {
