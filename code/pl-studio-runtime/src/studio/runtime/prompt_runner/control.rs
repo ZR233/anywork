@@ -720,7 +720,7 @@ mod tests {
                 }).await?;
                 let point = settled(&thread).await?.continuation.context("continuation")?.id;
                 stage.release();
-                evict(&env.runtime, &session, &id).await?;
+                evict(&env.runtime, &session, &id).await.context("evict before cold preparation")?;
                 ensure!(!session.hosts(&id), "eviction left a preparation or owner");
 
                 // The real assembler task cannot pass this permit until the test releases it.
@@ -781,7 +781,7 @@ mod tests {
                     env.runtime.validate_prompt_owner(&id, &session, &restored)?;
                     drop(permit);
                     ensure!(env.root_provider.recorded().len() == 1, "cancelled caller admitted model work");
-                    env.runtime.archive_thread("archive-after-cancel".into(), id.clone()).await?;
+                    env.runtime.archive_thread("archive-after-cancel".into(), id.clone()).await.context("archive restored owner after cancellation")?;
                     let error = env.runtime.continue_thread(id.clone(), ContinueThreadRequest {
                         operation_id: "after-archive".into(),
                         expected_continuation_token: point,

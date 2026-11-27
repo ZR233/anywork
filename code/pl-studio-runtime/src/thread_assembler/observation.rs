@@ -311,6 +311,13 @@ impl SessionRuntime {
                 Some(lifetime) => Some(lifetime.gate.lock().await),
                 None => None,
             };
+            // Catalog instances only borrow this controller. The incarnation owns shutdown.
+            let commands = scope.with_binding(|binding| {
+                binding.and_then(|binding| binding.commands.as_ref()?.upgrade())
+            });
+            if let Some(commands) = commands {
+                commands.close().await;
+            }
             scope
                 .candidates
                 .retry(Some(&thread))

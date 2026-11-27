@@ -55,6 +55,7 @@ pub struct ThreadExecTool<B: CommandBackend, A: CommandOutputArchive> {
     processes: Arc<CommandProcessManager<B>>,
     archive: Arc<A>,
     access: CommandAccess,
+    owns_processes: bool,
 }
 
 impl<B: CommandBackend, A: CommandOutputArchive> ThreadExecTool<B, A> {
@@ -70,10 +71,12 @@ impl<B: CommandBackend, A: CommandOutputArchive> ThreadExecTool<B, A> {
             processes: Arc::new(CommandProcessManager::new(backend)),
             archive,
             access,
+            owns_processes: true,
         }
     }
 
-    /// Binds a prepared definition while retaining this Thread's existing physical command manager.
+    /// Borrows the Thread's physical command manager across catalog refreshes.
+    /// The caller must close the manager at the Thread's retirement boundary.
     pub fn from_process_manager(
         processes: Arc<CommandProcessManager<B>>,
         archive: Arc<A>,
@@ -85,6 +88,7 @@ impl<B: CommandBackend, A: CommandOutputArchive> ThreadExecTool<B, A> {
             processes,
             archive,
             access,
+            owns_processes: false,
         }
     }
 
@@ -251,11 +255,6 @@ impl<B: CommandBackend> pl_agent_tool::Tool for ThreadWriteStdinTool<B> {
             pl_tool_command::write_stdin::InputOutcome::Cancelled => Err(ToolError::new(pl_core::thread::ThreadError::Cancelled).with_output(output)),
             pl_tool_command::write_stdin::InputOutcome::Incomplete => Err(ToolError::new(ExecFailure::Process("stdin delivery incomplete; inspect accepted and confirmed offsets before continuing".into())).with_output(output)),
         }
-    }
-
-    async fn close(&self) -> Result<(), ToolError> {
-        self.processes.close().await;
-        Ok(())
     }
 }
 
@@ -453,7 +452,9 @@ impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadE
     }
 
     async fn close(&self) -> Result<(), ToolError> {
-        self.processes.close().await;
+        if self.owns_processes {
+            self.processes.close().await;
+        }
         Ok(())
     }
 }

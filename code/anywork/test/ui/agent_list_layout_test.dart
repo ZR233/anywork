@@ -538,7 +538,9 @@ void main() {
       expect(closeFailedText.data, 'Close failed');
       expect(
         closeFailedText.style?.color,
-        Theme.of(tester.element(find.byType(AgentSwitcherMenu))).colorScheme.error,
+        Theme.of(tester.element(find.byType(AgentSwitcherMenu)))
+            .colorScheme
+            .error,
       );
       _expectAgentGeometryStable(
         baseline,

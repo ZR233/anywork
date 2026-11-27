@@ -340,6 +340,18 @@ async fn slow_command_status_queries_and_top_level_wait_share_the_real_task_life
     .registration(
         prepare_registration("exec_command", &definition, ToolCallPolicy::DirectOnly).unwrap(),
     );
+    // A refreshed catalog retires borrowed tool instances without retiring the Thread's controller.
+    let retired = ThreadExecTool::from_process_manager(
+        processes.clone(),
+        Arc::new(Archive(root.path().join("archive"))),
+        CommandAccess::WorkspaceOnly,
+        definition.clone(),
+    );
+    pl_agent_tool::Tool::close(&retired).await.unwrap();
+    assert_eq!(
+        processes.lifecycle(),
+        pl_tool::command::ProcessManagerLifecycle::Open
+    );
     let stdin_definition = pl_tool::exec::write_stdin_definition();
     let stdin = prepare_registration("write_stdin", &stdin_definition, ToolCallPolicy::DirectOnly)
         .unwrap()

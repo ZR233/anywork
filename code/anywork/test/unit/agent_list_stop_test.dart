@@ -181,7 +181,11 @@ void main() {
           ),
           acceptedExecutionId: 'exec-child-1',
         );
-        expect(resolved.action, AgentListStopAction.none, reason: '${state.label}:$phase');
+        expect(
+          resolved.action,
+          AgentListStopAction.none,
+          reason: '${state.label}:$phase',
+        );
         expect(resolved.canStop, isFalse, reason: '${state.label}:$phase');
         expect(resolved.showsControl, isFalse, reason: '${state.label}:$phase');
       }
