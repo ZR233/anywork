@@ -33,12 +33,22 @@ fn turn_origin<'a>(
 
 pub(super) fn active_origin(state: &ThreadSnapshot) -> Option<ActivityOrigin<'_>> {
     if let InputExecution::Interrupting { turn_id } = &state.input_execution {
-        let input_id = state
-            .turns
-            .iter()
-            .find(|turn| &turn.turn_id == turn_id)
-            .and_then(|turn| turn.input_id.as_deref());
-        return Some(turn_origin(state, turn_id, input_id));
+        if let Some(turn_id) = turn_id {
+            let input_id = state
+                .turns
+                .iter()
+                .find(|turn| &turn.turn_id == turn_id)
+                .and_then(|turn| turn.input_id.as_deref());
+            return Some(turn_origin(state, turn_id, input_id));
+        }
+        if let Some(execution) = state.execution.as_ref() {
+            return Some(ActivityOrigin {
+                source_id: &execution.id,
+                turn_id: execution.turn_id.as_deref(),
+                execution_id: Some(&execution.id),
+                input_id: None,
+            });
+        }
     }
     if let Some(turn) = running_turn(state) {
         return Some(turn_origin(state, &turn.turn_id, turn.input_id.as_deref()));
@@ -141,7 +151,7 @@ pub(super) fn kind(
 ) -> ThreadActivityKind {
     if matches!(
         &state.input_execution,
-        InputExecution::Interrupting { turn_id: id } if id.as_str() == turn_id
+        InputExecution::Interrupting { turn_id: Some(id) } if id.as_str() == turn_id
     ) || active_tasks
         .iter()
         .any(|task| task.turn_id == turn_id && task.cancel_requested)

@@ -91,7 +91,7 @@ final List<SessionDirectoryRow> sidebarPreviewThreads = List.unmodifiable([
     id: 'thread-ssh',
     title: '远端 GTK 环境检查',
     workspaceId: 'project-ssh',
-    status: ThreadStatusView.waitingTool,
+    status: ThreadStatusView.running,
   ),
   sidebarPreviewThread(
     id: 'thread-standalone',

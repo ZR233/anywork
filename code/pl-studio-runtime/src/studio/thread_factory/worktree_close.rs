@@ -40,7 +40,14 @@ impl StudioThreadFactory {
         }
         .await;
         match cleanup {
-            Ok(()) => Ok((record.result(), None)),
+            Ok(()) => {
+                self.services
+                    .product_events
+                    .commit_explicit_close(&thread.id)
+                    .await?;
+                self.sync_agent_close_recovery(&record);
+                Ok((record.result(), None))
+            }
             Err(error) => {
                 if !record.worktree_cleanup.is_terminal() {
                     record.worktree_cleanup = AgentWorktreeCleanup::Failed {
@@ -57,6 +64,12 @@ impl StudioThreadFactory {
                 if let Err(save) = self.services.store.save_agent_close(&record).await {
                     failure =
                         failure.context(format!("close result save remains unconfirmed: {save:#}"));
+                } else {
+                    self.services
+                        .product_events
+                        .commit_explicit_close(&thread.id)
+                        .await?;
+                    self.sync_agent_close_recovery(&record);
                 }
                 Ok((record.result(), Some(state_error(&failure))))
             }

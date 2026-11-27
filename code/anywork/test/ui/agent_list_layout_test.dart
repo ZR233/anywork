@@ -514,6 +514,42 @@ void main() {
         findsNothing,
         reason: 'closed state never regains a stop affordance',
       );
+
+      graph.client.project.applyAgentDirectory(
+        AgentDirectoryState(
+          revision: revision++,
+          values: _agentsWithSelectedState(
+            state: const CloseFailedStudioAgent(),
+          ),
+        ),
+      );
+      await _pumpAgentMenu(
+        tester,
+        graph,
+        _agentsWithSelectedState(state: const CloseFailedStudioAgent()),
+      );
+      await _ensureLayoutMenuOpen(tester);
+      final closeFailedText = tester.widget<Text>(
+        find.descendant(
+          of: find.byKey(ValueKey('agent-status-slot-$_selectedId')),
+          matching: find.byType(Text),
+        ),
+      );
+      expect(closeFailedText.data, 'Close failed');
+      expect(
+        closeFailedText.style?.color,
+        Theme.of(tester.element(find.byType(AgentSwitcherMenu))).colorScheme.error,
+      );
+      _expectAgentGeometryStable(
+        baseline,
+        _agentGeometry(tester, _selectedId),
+        reason: 'closeFailed',
+      );
+      expect(
+        find.byKey(StudioDriverKeys.agentStop(_selectedId)),
+        findsNothing,
+        reason: 'closeFailed never offers active execution stop',
+      );
       await _closeLayoutGraph(tester, graph);
     },
   );

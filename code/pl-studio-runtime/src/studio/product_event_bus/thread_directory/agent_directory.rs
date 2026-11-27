@@ -5,6 +5,9 @@ use super::*;
 pub(super) fn cold_native_activity(agent: &AgentDirectoryRecord) -> StudioAgentActivity {
     let state = match agent.projected_backend().native_status() {
         Some(ThreadStatus::Closed) => crate::AgentState::Closed(crate::ClosedAgentState::new()),
+        Some(ThreadStatus::CloseFailed) => {
+            crate::AgentState::CloseFailed(crate::CloseFailedAgentState::new())
+        }
         Some(ThreadStatus::Closing) => crate::AgentState::Closing(crate::ClosingAgentState::new()),
         _ => crate::AgentState::idle(),
     };

@@ -160,7 +160,8 @@ impl ThreadHandle {
         let mut owner = Owner {
             active: None,
             primary: None,
-            closing: None,
+            lifecycle: crate::thread::execution::LifecycleControl::Open,
+            drain_waiters: Vec::new(),
             runtime_epoch,
             current_call: None,
             current_capture: None,
@@ -331,6 +332,19 @@ impl ThreadHandle {
                 expected: expected_execution_id,
                 reply,
             })
+            .await
+            .map_err(|_| ThreadError::Closed)?;
+        response.await.map_err(|_| ThreadError::Closed)?
+    }
+
+    /// Pauses queued execution, stops any active or preparing execution, and waits until idle.
+    ///
+    /// # Errors
+    /// Returns [`ThreadError::Closed`] when the owner has already closed.
+    pub async fn drain_execution(&self) -> Result<(), ThreadError> {
+        let (reply, response) = oneshot::channel();
+        self.user_commands
+            .send(UserCommand::DrainExecution(reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?

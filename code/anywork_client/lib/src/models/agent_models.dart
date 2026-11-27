@@ -53,7 +53,10 @@ sealed class StudioAgentState {
 
   bool get isActive => switch (this) {
     RunningStudioAgent() || WaitingInteractionStudioAgent() => true,
-    IdleStudioAgent() || ClosingStudioAgent() || ClosedStudioAgent() => false,
+    IdleStudioAgent() ||
+    ClosingStudioAgent() ||
+    ClosedStudioAgent() ||
+    CloseFailedStudioAgent() => false,
   };
 
   String get label => switch (this) {
@@ -62,6 +65,7 @@ sealed class StudioAgentState {
     WaitingInteractionStudioAgent() => 'waitingInteraction',
     ClosingStudioAgent() => 'closing',
     ClosedStudioAgent() => 'closed',
+    CloseFailedStudioAgent() => 'closeFailed',
   };
 
   @override
@@ -108,6 +112,10 @@ final class ClosingStudioAgent extends StudioAgentState {
 
 final class ClosedStudioAgent extends StudioAgentState {
   const ClosedStudioAgent();
+}
+
+final class CloseFailedStudioAgent extends StudioAgentState {
+  const CloseFailedStudioAgent();
 }
 
 /// 目录运行事实按后端区分；ACP 未观察到的状态不映射为 Native 空闲。

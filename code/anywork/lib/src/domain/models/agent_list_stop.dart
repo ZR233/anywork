@@ -70,9 +70,10 @@ final class AgentListStopState {
     if (activity.state is ClosedStudioAgent) {
       return const AgentListStopState(action: AgentListStopAction.none);
     }
-    // 正在关闭的成员没有当前工作：关闭由关闭流程推进；即使仍带遗留执行与停止资格，
-    // 也不提供可点停止或「正在停止」。
-    if (activity.state is ClosingStudioAgent) {
+    // 正在关闭或关闭失败的成员没有当前工作：关闭由关闭流程推进或等待强制重试；即使仍带
+    // 遗留执行与停止资格，也不提供可点停止或「正在停止」。
+    if (activity.state is ClosingStudioAgent ||
+        activity.state is CloseFailedStudioAgent) {
       return const AgentListStopState(action: AgentListStopAction.none);
     }
     final execution = activity.execution;

@@ -42,7 +42,7 @@ impl StudioRuntime {
         *slot = Some(BackgroundTask::new(tokio::spawn(async move {
             let mut issues = Vec::new();
             let result = async {
-                if let Err(error) = runtime.sessions.resume_agent_closes().await {
+                if let Err(error) = runtime.resume_agent_closes().await {
                     // Only new, durable explicit grants are resumed, with their original policy.
                     // The retained collaboration owner outlives cancellation of this scan.
                     tracing::warn!(%error, "explicit child retirement recovery remains pending");

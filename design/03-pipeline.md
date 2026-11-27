@@ -59,7 +59,7 @@ flowchart TD
     IdleWait --> Start
 ```
 
-主循环通过单一元事件出口有序发出两类事实：需持久化并实时广播的规范业务事件（`Durable`），以及仅驱动内存实时状态栏与过程界面的瞬态流信号（`Ephemeral`）。循环执行期间严禁读取 `current.json` 或历史数据库；持久化对实时处理区严格只作为异步写沉与冷启动恢复来源（见 [15](./15-session-storage.md) 与 [26](./26-timeline-content.md)）。
+主循环通过单一元事件出口有序发出两类事实：需持久化并实时广播的规范业务事件（`Durable`），以及仅驱动内存实时状态栏与过程界面的瞬态流信号（`Ephemeral`）。循环执行期间严禁读取 `current.json` 或历史数据库；持久化对实时处理区严格只作为异步写沉与冷启动恢复来源（见 [15](./15-session-storage.md) 与 [26](./26-timeline-content.md)）。主循环的关闭状态机统一归属于 `LifecycleControl::{Open, Closing(CloseMachine), Closed}`，经 `CloseStage::{DrainExecution, JoinTasks, CloseModel, CloseTools, Flush, Finish}` 严格单步推进；`CloseMachine` 在各阶段仅于成功完成后前进并允许 `Preserve → Delete` 升级与并发等待者合并，失败保留当前阶段供精确续推，同时在 `Closing` 期间继续受理观察端事件槽重绑（`AttachEventSink`）以避免最终提交确认死锁。`drain_execution()` 通过统一停机原语中止包括轮次记录创建前（`Starting`/`Preparing`）在内的在途执行并等待完整排空。
 
 模型流式响应依次生成助手条目、工具调用请求、工具执行结果以及下一步模型输入：
 - **并发与独占批处理**：连续普通工具段共享快速窗口并并发派发（`Coexist`），前台工具形成顺序屏障，容量准入与公平性见 [09](./09-tool-runtime.md) §9.4；工作流状态转换工具声明为独占执行（`Solo`）——若同一模型响应中还包含任何其他工具调用，整批调用将被直接拒绝且不产生任何副作用；工作流查询工具仍为 `Coexist`。

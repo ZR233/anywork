@@ -7275,6 +7275,12 @@ abstract class AppLocalizations {
   /// **'Closed'**
   String get threadStatusClosed;
 
+  /// No description provided for @threadStatusCloseFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Close failed'**
+  String get threadStatusCloseFailed;
+
   /// No description provided for @toolStatusAwaitingApproval.
   ///
   /// In en, this message translates to:

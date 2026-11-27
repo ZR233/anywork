@@ -516,12 +516,9 @@ impl SessionRuntime {
         // core/writer is retired; closing the core first would force it to recreate its own source.
         if purpose == ClosePurpose::Preserve && thread.snapshot().lifecycle == ThreadLifecycle::Open
         {
-            thread.interrupt_turn(None).await?;
-            let mut updates = thread.subscribe();
-            while thread.snapshot().execution.is_some() {
-                if updates.next().await.is_none() {
-                    return Err(ThreadAssemblyError::Closed);
-                }
+            match thread.drain_execution().await {
+                Ok(()) | Err(ThreadError::Closed) => {}
+                Err(error) => return Err(error.into()),
             }
         }
         if purpose == ClosePurpose::Preserve && self.0.state().observation.is_some() {

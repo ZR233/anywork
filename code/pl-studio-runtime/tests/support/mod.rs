@@ -334,7 +334,7 @@ impl Environment {
         })
     }
 
-    fn options(home: &Path) -> StudioRuntimeOptions {
+    pub fn options(home: &Path) -> StudioRuntimeOptions {
         StudioRuntimeOptions {
             studio_home: Some(home.into()),
             host: StudioHostKind::Test,

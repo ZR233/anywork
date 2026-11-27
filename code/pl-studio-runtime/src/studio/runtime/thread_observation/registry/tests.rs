@@ -260,3 +260,52 @@ async fn closing_delivery_ends_an_initialization_wait() -> Result<()> {
     runtime.shutdown_runtime().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn closing_thread_with_synchronized_live_observation_closes_bus_and_finishes_cleanly()
+-> Result<()> {
+    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        let temporary = tempfile::tempdir()?;
+        let home = temporary.path().join("home");
+        let _endpoint = configure(&home).await?;
+        let workspace = temporary.path().join("workspace");
+        tokio::fs::create_dir_all(&workspace).await?;
+        let runtime = StudioRuntime::initialize(options(&home)).await?;
+        let project = runtime.open_project(&workspace).await?;
+        let thread = runtime
+            .create_thread(&project.id, "close synchronized observer")
+            .await?;
+        let _owner = runtime.ensure_thread_owner(&thread.id).await?;
+        runtime.synchronize_thread_observation(&thread.id).await?;
+        let observation = runtime
+            .thread_observations
+            .observations(Some(&thread.id))
+            .pop()
+            .expect("synchronized observation")
+            .1;
+        assert!(
+            observation
+                .state
+                .bus
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_some()
+        );
+        runtime
+            .require_session(&thread.id)?
+            .close(&thread.id)
+            .await?;
+        assert!(
+            observation
+                .state
+                .bus
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_none(),
+            "draining observation during close must clear and close WorkerState.bus"
+        );
+        runtime.shutdown_runtime().await?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .await?
+}

@@ -217,7 +217,7 @@ pub enum InputExecution {
     Paused,
     Ready,
     Interrupting {
-        turn_id: String,
+        turn_id: Option<String>,
     },
     Failed {
         error: Arc<ThreadError>,

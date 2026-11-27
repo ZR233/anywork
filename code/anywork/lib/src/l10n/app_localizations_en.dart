@@ -4048,6 +4048,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get threadStatusClosed => 'Closed';
 
   @override
+  String get threadStatusCloseFailed => 'Close failed';
+
+  @override
   String get toolStatusAwaitingApproval => 'Awaiting approval';
 
   @override

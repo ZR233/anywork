@@ -13,6 +13,7 @@ pub enum AgentState {
     WaitingInteraction(WaitingInteractionAgentState),
     Closing(ClosingAgentState),
     Closed(ClosedAgentState),
+    CloseFailed(CloseFailedAgentState),
 }
 
 impl AgentState {
@@ -26,13 +27,13 @@ impl AgentState {
         match self {
             Self::Running(state) => Some(state.turn_id()),
             Self::WaitingInteraction(state) => Some(state.turn_id()),
-            Self::Idle(_) | Self::Closing(_) | Self::Closed(_) => None,
+            Self::Idle(_) | Self::Closing(_) | Self::Closed(_) | Self::CloseFailed(_) => None,
         }
     }
 
     /// 返回 Agent 是否已停止执行并可供等待方收束。
     pub fn is_settled(&self) -> bool {
-        matches!(self, Self::Idle(_) | Self::Closed(_))
+        matches!(self, Self::Idle(_) | Self::Closed(_) | Self::CloseFailed(_))
     }
 }
 
@@ -106,6 +107,17 @@ impl ClosingAgentState {
 pub struct ClosedAgentState;
 
 impl ClosedAgentState {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+/// 显式关闭执行或资源清理失败、等待强制重试的 Agent 状态。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CloseFailedAgentState;
+
+impl CloseFailedAgentState {
     pub fn new() -> Self {
         Self
     }

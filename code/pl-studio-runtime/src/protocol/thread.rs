@@ -125,11 +125,11 @@ pub enum ThreadStatus {
     Idle,
     Queued,
     Running,
-    WaitingTool,
     WaitingInteraction,
     Cancelling,
     Closing,
     Closed,
+    CloseFailed,
     Faulted,
 }
 
@@ -455,11 +455,11 @@ pl_protocol::impl_labeled_enum!(
         ThreadStatus::Idle => "idle",
         ThreadStatus::Queued => "queued",
         ThreadStatus::Running => "running",
-        ThreadStatus::WaitingTool => "waitingTool",
         ThreadStatus::WaitingInteraction => "waitingInteraction",
         ThreadStatus::Cancelling => "cancelling",
         ThreadStatus::Closing => "closing",
         ThreadStatus::Closed => "closed",
+        ThreadStatus::CloseFailed => "closeFailed",
         ThreadStatus::Faulted => "faulted",
     ]
 );

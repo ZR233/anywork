@@ -232,6 +232,7 @@ pub enum BridgeAgentState {
     WaitingInteraction(BridgeWaitingInteractionAgent),
     Closing(BridgeClosingAgent),
     Closed(BridgeClosedAgent),
+    CloseFailed(BridgeCloseFailedAgent),
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -255,6 +256,9 @@ pub struct BridgeClosingAgent {}
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BridgeClosedAgent {}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BridgeCloseFailedAgent {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

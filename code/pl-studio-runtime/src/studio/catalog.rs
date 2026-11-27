@@ -15,7 +15,6 @@ mod validation;
 
 use std::path::PathBuf;
 
-use crate::ThreadStatus;
 use anyhow::{Result, ensure};
 use version_migrate::Versioned;
 
@@ -33,7 +32,7 @@ struct CatalogDocument {
 }
 
 impl Versioned for CatalogDocument {
-    const VERSION: &'static str = schema::CatalogV8::VERSION;
+    const VERSION: &'static str = schema::CatalogV9::VERSION;
 }
 
 impl RevisionedDocument for CatalogDocument {
@@ -255,7 +254,7 @@ impl CatalogStore {
     pub(in crate::studio) async fn project_explicit_close(
         &self,
         agent_id: &str,
-        execution_closed: bool,
+        close_status: crate::studio::store::agent_close::AgentCloseStatus,
     ) -> Result<()> {
         ensure!(
             self.get_agent(agent_id)
@@ -263,6 +262,7 @@ impl CatalogStore {
             "explicit close projection requires a saved child"
         );
         let agent_id = agent_id.to_owned();
+        let status = close_status.thread_status();
         self.mutate_document(move |document| {
             let Some(agent) = document
                 .agents
@@ -270,11 +270,6 @@ impl CatalogStore {
                 .find(|agent| agent.agent_id == agent_id)
             else {
                 return false;
-            };
-            let status = if execution_closed {
-                ThreadStatus::Closed
-            } else {
-                ThreadStatus::Closing
             };
             if agent.explicitly_closed
                 && agent
@@ -465,6 +460,7 @@ pub(in crate::studio) async fn relocate_managed_v2_paths(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ThreadStatus;
     use crate::studio::records::{AcpDirectoryTitle, AcpPeerTitle, AcpTitleLabel};
     use crate::studio::store::directory::DirectoryDelta;
     use crate::toml_schema::DocumentMigrationFailed;
@@ -654,7 +650,7 @@ mod tests {
             };
             let encoded = toml_schema::encode(&document, schema::SCHEMA_KEY).expect("encode ACP");
             let table: toml::Table = toml::from_str(&encoded).expect("wire");
-            assert_eq!(table["schemaVersion"].as_integer(), Some(8));
+            assert_eq!(table["schemaVersion"].as_integer(), Some(9));
             let title = &table["sessions"][0]["acpTitle"];
             assert_eq!(title["label"].as_str(), Some(wire_label));
             match peer {
@@ -740,10 +736,10 @@ mod tests {
         assert_ne!(upgraded, legacy);
         assert_eq!(
             toml::from_str::<toml::Table>(&upgraded).unwrap()["schemaVersion"].as_integer(),
-            Some(8)
+            Some(9)
         );
         drop(store);
-        let reopened = CatalogStore::load(path.clone()).await.expect("reopen V8");
+        let reopened = CatalogStore::load(path.clone()).await.expect("reopen V9");
         assert_eq!(*reopened.store.lock(), document);
         assert_eq!(tokio::fs::read_to_string(&path).await.unwrap(), upgraded);
     }

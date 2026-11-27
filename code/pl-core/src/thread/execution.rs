@@ -154,19 +154,145 @@ pub(super) struct ToolWaiter {
     pub(super) reply: oneshot::Sender<Result<ToolDispatch, ThreadError>>,
 }
 
-pub(super) struct Closing {
-    pub(super) purpose: owner::ClosePurpose,
-    pub(super) reply: Option<oneshot::Sender<Result<(), ThreadError>>>,
-    pub(super) stage: CloseStage,
+pub(super) enum LifecycleControl {
+    Open,
+    Closing(CloseMachine),
+    Closed,
 }
 
-#[derive(Clone, Copy)]
+impl LifecycleControl {
+    pub(super) fn is_closing(&self) -> bool {
+        matches!(self, Self::Closing(_))
+    }
+
+    pub(super) fn is_closed(&self) -> bool {
+        matches!(self, Self::Closed)
+    }
+}
+
+pub(super) struct CloseMachine {
+    pub(super) purpose: owner::ClosePurpose,
+    pub(super) waiters: Vec<oneshot::Sender<Result<(), ThreadError>>>,
+    pub(super) stage: CloseStage,
+    pub(super) paused_on_error: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CloseStage {
-    Join,
-    Model,
-    Tools,
+    DrainExecution,
+    JoinTasks,
+    CloseModel,
+    CloseTools,
     Flush,
     Finish,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) enum StopScope {
+    Turn,
+    Shutdown { deleting: bool },
+}
+
+fn clone_close_error(error: &ThreadError) -> ThreadError {
+    match error {
+        ThreadError::CurrentPaused => ThreadError::CurrentPaused,
+        ThreadError::CurrentResume(inner) => ThreadError::CurrentResume(inner.clone()),
+        ThreadError::InputRequiresIdle => ThreadError::InputRequiresIdle,
+        ThreadError::InputInUse => ThreadError::InputInUse,
+        ThreadError::InvalidControlInput => ThreadError::InvalidControlInput,
+        ThreadError::StaleContinuation => ThreadError::StaleContinuation,
+        ThreadError::InputConsumed => ThreadError::InputConsumed,
+        ThreadError::ModelUnavailable => ThreadError::ModelUnavailable,
+        ThreadError::ToolPermissionRevoked => ThreadError::ToolPermissionRevoked,
+        ThreadError::TaskAccessDenied => ThreadError::TaskAccessDenied,
+        ThreadError::TaskAccessExpired => ThreadError::TaskAccessExpired,
+        ThreadError::TaskSelfWait => ThreadError::TaskSelfWait,
+        ThreadError::InvalidWaitTimeout => ThreadError::InvalidWaitTimeout,
+        ThreadError::Closed => ThreadError::Closed,
+        ThreadError::Cancelled => ThreadError::Cancelled,
+        ThreadError::InvalidIdentity => ThreadError::InvalidIdentity,
+        ThreadError::ExtensionConflict {
+            id,
+            expected,
+            actual,
+        } => ThreadError::ExtensionConflict {
+            id: id.clone(),
+            expected: *expected,
+            actual: *actual,
+        },
+        ThreadError::StaleRuntimeBundle => ThreadError::StaleRuntimeBundle,
+        ThreadError::RuntimeInstallation(inner) => ThreadError::RuntimeInstallation(inner.clone()),
+        ThreadError::InvalidOutput => ThreadError::InvalidOutput,
+        ThreadError::TaskNotFound { task_id } => ThreadError::TaskNotFound {
+            task_id: task_id.clone(),
+        },
+        ThreadError::RevisionExhausted => ThreadError::RevisionExhausted,
+        ThreadError::ContextConflict { expected, actual } => ThreadError::ContextConflict {
+            expected: *expected,
+            actual: *actual,
+        },
+        ThreadError::InvalidContext => ThreadError::InvalidContext,
+        ThreadError::Storage(inner) => ThreadError::Storage(inner.clone()),
+        ThreadError::StoragePressure => ThreadError::StoragePressure,
+        ThreadError::StaleStorageRecovery {
+            requested,
+            recorded,
+        } => ThreadError::StaleStorageRecovery {
+            requested: *requested,
+            recorded: *recorded,
+        },
+        ThreadError::StorageRecoveryPending { durable, required } => {
+            ThreadError::StorageRecoveryPending {
+                durable: *durable,
+                required: *required,
+            }
+        }
+        ThreadError::StorageRecoveryUnverified { generation } => {
+            ThreadError::StorageRecoveryUnverified {
+                generation: *generation,
+            }
+        }
+        ThreadError::UnknownCapacity => ThreadError::UnknownCapacity,
+        ThreadError::ContextCapacity { estimate, limit } => ThreadError::ContextCapacity {
+            estimate: *estimate,
+            limit: *limit,
+        },
+        ThreadError::MissingCall => ThreadError::MissingCall,
+        ThreadError::PendingTools => ThreadError::PendingTools,
+        ThreadError::PendingInteraction => ThreadError::PendingInteraction,
+        ThreadError::Tool(inner) => ThreadError::Tool(inner.clone()),
+        ThreadError::Model(inner) => ThreadError::Model(inner.clone()),
+        ThreadError::ModelRepair { primary, repair } => ThreadError::ModelRepair {
+            primary: primary.clone(),
+            repair: repair.clone(),
+        },
+        other => ThreadError::Storage(Arc::new(cold::ColdStoreError {
+            source: Box::new(std::io::Error::other(other.to_string())),
+        })),
+    }
+}
+
+fn reply_close_waiters(
+    mut waiters: Vec<oneshot::Sender<Result<(), ThreadError>>>,
+    result: Result<(), ThreadError>,
+) {
+    match result {
+        Ok(()) => {
+            for reply in waiters {
+                let _ = reply.send(Ok(()));
+            }
+        }
+        Err(error) => {
+            let Some(last) = waiters.pop() else {
+                tracing::error!(%error, "abandoned owner shutdown failed");
+                return;
+            };
+            for reply in waiters {
+                let _ = reply.send(Err(clone_close_error(&error)));
+            }
+            let _ = last.send(Err(error));
+        }
+    }
 }
 
 pub(super) enum MaintenanceCompletion {
@@ -241,16 +367,89 @@ impl Owner {
     pub(super) fn fail_owner_work(&mut self, error: ThreadError) {
         if self.active.is_some() {
             self.settle_run(Err(error));
-        } else if let Some(closing) = self.closing.take() {
+        } else if let LifecycleControl::Closing(machine) = &mut self.lifecycle {
+            machine.paused_on_error = true;
+            let waiters = std::mem::take(&mut machine.waiters);
             self.publish_snapshot();
-            if let Some(reply) = closing.reply {
-                let _ = reply.send(Err(error));
-            } else {
-                tracing::error!(thread = self.id, %error, "abandoned owner shutdown failed");
-            }
+            reply_close_waiters(waiters, Err(error));
         } else {
             self.driver.fail(Arc::new(error));
             self.pause_execution();
+        }
+    }
+
+    pub(super) fn apply_execution_stop(&mut self, scope: StopScope) -> Result<bool, ThreadError> {
+        match scope {
+            StopScope::Turn => {
+                self.pause_execution();
+                let target_turn = self
+                    .state
+                    .turns
+                    .iter()
+                    .rev()
+                    .find(|turn| turn.state == TurnState::Running)
+                    .map(|turn| turn.turn_id.clone())
+                    .or_else(|| self.stopping_turn.clone())
+                    .or_else(|| self.active.as_ref().map(|run| run.input.turn_id.clone()))
+                    .or_else(|| {
+                        self.state
+                            .execution
+                            .as_ref()
+                            .and_then(|execution| execution.turn_id.clone())
+                    });
+                if let Some(turn_id) = &target_turn {
+                    self.stopping_turn = Some(turn_id.clone());
+                    self.cancel_turn_tasks(turn_id)?;
+                }
+                self.note_execution_phase(ExecutionPhase::Stopping);
+                let interrupted = self.interrupt.interrupt();
+                self.publish_snapshot();
+                Ok(interrupted)
+            }
+            StopScope::Shutdown { deleting } => {
+                if deleting {
+                    self.interrupt.begin_delete();
+                } else {
+                    self.interrupt.begin_close();
+                }
+                self.cancel_auxiliary_model_calls();
+                self.reject_pending_bundle(ThreadError::Closed);
+                self.retry_retired_runtime_models();
+                if !deleting {
+                    self.form_host_shutdown();
+                }
+                self.executions.stop_admission();
+                for id in self.executions.keys() {
+                    let _ = self.cancel_task(&id);
+                }
+                self.note_execution_phase(ExecutionPhase::Stopping);
+                Ok(true)
+            }
+        }
+    }
+
+    pub(super) fn request_drain_execution(
+        &mut self,
+        reply: oneshot::Sender<Result<(), ThreadError>>,
+    ) {
+        if self.lifecycle.is_closed() {
+            let _ = reply.send(Err(ThreadError::Closed));
+            return;
+        }
+        let _ = self.apply_execution_stop(StopScope::Turn);
+        if self.active.is_none() && self.state.execution.is_none() {
+            let _ = reply.send(Ok(()));
+        } else {
+            self.drain_waiters.push(reply);
+        }
+    }
+
+    pub(super) fn settle_drain_waiters(&mut self) {
+        if self.active.is_some() || self.state.execution.is_some() {
+            return;
+        }
+        for reply in std::mem::take(&mut self.drain_waiters) {
+            let _ = reply.send(Ok(()));
         }
     }
 
@@ -657,73 +856,109 @@ impl Owner {
         purpose: owner::ClosePurpose,
         reply: Option<oneshot::Sender<Result<(), ThreadError>>>,
     ) {
-        if self.closing.is_some() {
-            if let Some(reply) = reply {
-                let _ = reply.send(Err(ThreadError::InputRequiresIdle));
+        match &mut self.lifecycle {
+            LifecycleControl::Closed => {
+                if self.primary.is_none()
+                    && self.active.is_none()
+                    && self.final_current.borrow().is_some()
+                {
+                    if let Some(reply) = reply {
+                        let _ = reply.send(Ok(()));
+                    }
+                    return;
+                }
             }
-            return;
+            LifecycleControl::Closing(machine) => {
+                if purpose == owner::ClosePurpose::Delete
+                    && machine.purpose != owner::ClosePurpose::Delete
+                {
+                    machine.purpose = owner::ClosePurpose::Delete;
+                    self.interrupt.begin_delete();
+                }
+                machine.paused_on_error = false;
+                if let Some(reply) = reply {
+                    machine.waiters.push(reply);
+                }
+                return;
+            }
+            LifecycleControl::Open => {}
         }
         self.state.lifecycle = ThreadLifecycle::Closing;
-        self.cancel_auxiliary_model_calls();
-        self.reject_pending_bundle(ThreadError::Closed);
-        self.retry_retired_runtime_models();
-        if purpose == owner::ClosePurpose::Preserve && !self.interrupt.is_deleting() {
-            self.form_host_shutdown();
-        }
-        self.executions.stop_admission();
-        for id in self.executions.keys() {
-            let _ = self.cancel_task(&id);
-        }
-        self.closing = Some(Closing {
+        self.lifecycle = LifecycleControl::Closing(CloseMachine {
             purpose,
-            reply,
-            stage: CloseStage::Join,
+            waiters: reply.into_iter().collect(),
+            stage: CloseStage::DrainExecution,
+            paused_on_error: false,
         });
-        if purpose == owner::ClosePurpose::Delete || self.interrupt.is_deleting() {
+        let deleting = purpose == owner::ClosePurpose::Delete || self.interrupt.is_deleting();
+        let _ = self.apply_execution_stop(StopScope::Shutdown { deleting });
+        if deleting {
             self.publish_snapshot();
         } else if let Err(error) = self.publish() {
             self.fail_owner_work(error);
         }
     }
 
+    fn advance_close_stage(&mut self, expected: CloseStage, next: CloseStage) {
+        if let LifecycleControl::Closing(machine) = &mut self.lifecycle
+            && machine.stage == expected
+        {
+            machine.stage = next;
+        }
+    }
+
     fn advance_close(&mut self) -> Result<bool, ThreadError> {
-        if !self.background.is_empty() {
+        let LifecycleControl::Closing(machine) = &self.lifecycle else {
+            return Ok(false);
+        };
+        if machine.paused_on_error {
             return Ok(false);
         }
-        let stage = self.closing.as_ref().unwrap().stage;
+        let stage = machine.stage;
+        let deleting =
+            machine.purpose == owner::ClosePurpose::Delete || self.interrupt.is_deleting();
         match stage {
-            CloseStage::Join => {
-                if self.closing.as_ref().unwrap().purpose != owner::ClosePurpose::Delete
-                    && !self.interrupt.is_deleting()
-                {
+            CloseStage::DrainExecution => {
+                if self.active.is_some() || self.state.execution.is_some() {
+                    return Ok(false);
+                }
+                self.settle_drain_waiters();
+                self.advance_close_stage(CloseStage::DrainExecution, CloseStage::JoinTasks);
+                return Ok(true);
+            }
+            CloseStage::JoinTasks => {
+                if !self.background.is_empty() {
+                    return Ok(false);
+                }
+                if !deleting {
                     self.cancel_pending_calls(None)?;
                 }
                 self.pending.clear();
                 self.retry_plan = None;
-                self.closing.as_mut().unwrap().stage = CloseStage::Model;
                 let executions = std::mem::take(&mut self.executions);
                 self.primary = Some(PrimaryWork::new(false, async move {
                     executions.join().await;
                     PrimaryCompletion::ExecutionsJoined(executions)
                 }));
             }
-            CloseStage::Model => {
+            CloseStage::CloseModel => {
                 if self.runtime_model_jobs != 0 {
                     return Ok(false);
                 }
                 if let Some((_, error)) = self.retired_runtime_models.first() {
                     return Err(ThreadError::Model(error.clone()));
                 }
-                self.closing.as_mut().unwrap().stage = CloseStage::Tools;
                 if let Some(mut model) = self.model.take() {
                     self.primary = Some(PrimaryWork::new(false, async move {
                         let result = model.close().await;
                         PrimaryCompletion::ClosedModel { model, result }
                     }));
+                } else {
+                    self.advance_close_stage(CloseStage::CloseModel, CloseStage::CloseTools);
+                    return Ok(true);
                 }
             }
-            CloseStage::Tools => {
-                self.closing.as_mut().unwrap().stage = CloseStage::Flush;
+            CloseStage::CloseTools => {
                 let mut tools = std::mem::take(&mut self.tools);
                 self.primary = Some(PrimaryWork::new(false, async move {
                     let result = tools.close().await;
@@ -731,9 +966,6 @@ impl Owner {
                 }));
             }
             CloseStage::Flush => {
-                let deleting = self.closing.as_ref().unwrap().purpose
-                    == owner::ClosePurpose::Delete
-                    || self.interrupt.is_deleting();
                 // The original calls can still deliver incurred receipts while unwinding.
                 // Wait for their retirement and save confirmations before the final fence.
                 // Ordinary flush requests may await that fence themselves and must not block it.
@@ -745,7 +977,6 @@ impl Owner {
                     self.check_model_settlements_saved()?;
                 }
                 self.resources = None;
-                self.state.lifecycle = ThreadLifecycle::Closed;
                 if deleting {
                     // All original producers have returned and resource cleanup has completed.
                     for (_, metadata) in std::mem::take(&mut self.task_metadata) {
@@ -755,15 +986,20 @@ impl Owner {
                         budget.release();
                     }
                     self.publish_snapshot();
-                    self.closing.as_mut().unwrap().stage = CloseStage::Finish;
+                    self.advance_close_stage(CloseStage::Flush, CloseStage::Finish);
                 } else {
-                    let publication = self.publish();
-                    self.state.lifecycle = ThreadLifecycle::Closing;
-                    self.publish_snapshot();
-                    publication?;
+                    if self.published.lifecycle != ThreadLifecycle::Closed {
+                        self.state.lifecycle = ThreadLifecycle::Closed;
+                        let publication = self.publish();
+                        self.state.lifecycle = ThreadLifecycle::Closing;
+                        self.publish_snapshot();
+                        publication?;
+                    } else {
+                        self.publish()?;
+                    }
                     match self.check_flush_health() {
                         Ok(()) => {
-                            self.closing.as_mut().unwrap().stage = CloseStage::Finish;
+                            self.advance_close_stage(CloseStage::Flush, CloseStage::Finish);
                         }
                         Err(ThreadError::Storage(error))
                             if error.source.is::<cold::StorageAdmissionBackpressure>() =>
@@ -779,11 +1015,15 @@ impl Owner {
                     return Ok(false);
                 }
                 self.state.lifecycle = ThreadLifecycle::Closed;
+                let waiters = match std::mem::replace(&mut self.lifecycle, LifecycleControl::Closed)
+                {
+                    LifecycleControl::Closing(machine) => machine.waiters,
+                    LifecycleControl::Closed | LifecycleControl::Open => Vec::new(),
+                };
                 self.publish_snapshot();
                 self.handoff_final_current();
-                if let Some(reply) = self.closing.take().and_then(|c| c.reply) {
-                    let _ = reply.send(Ok(()));
-                }
+                self.settle_drain_waiters();
+                reply_close_waiters(waiters, Ok(()));
                 return Ok(false);
             }
         }
@@ -871,7 +1111,8 @@ impl Owner {
             }
         }
         let Some(mut run) = self.active.take() else {
-            if self.closing.is_some() {
+            self.settle_drain_waiters();
+            if self.lifecycle.is_closing() {
                 return self.advance_close();
             }
             return self.start_immediate_work();
@@ -1220,16 +1461,21 @@ impl Owner {
                 self.finish_step(&step.input.attempt_id);
                 self.accept_step_result(step, result)?;
             }
-            PrimaryCompletion::ExecutionsJoined(executions) => self.executions = executions,
+            PrimaryCompletion::ExecutionsJoined(executions) => {
+                self.executions = executions;
+                self.advance_close_stage(CloseStage::JoinTasks, CloseStage::CloseModel);
+            }
             PrimaryCompletion::ClosedModel { model, result } => {
                 if let Err(error) = result {
                     self.model = Some(model);
                     return Err(ThreadError::Model(Arc::new(error)));
                 }
+                self.advance_close_stage(CloseStage::CloseModel, CloseStage::CloseTools);
             }
             PrimaryCompletion::ClosedTools { tools, result } => {
                 self.tools = tools;
                 result.map_err(|error| ThreadError::Tool(Arc::new(error)))?;
+                self.advance_close_stage(CloseStage::CloseTools, CloseStage::Flush);
             }
         }
         Ok(())

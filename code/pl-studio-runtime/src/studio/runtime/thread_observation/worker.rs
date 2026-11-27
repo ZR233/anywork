@@ -45,6 +45,7 @@ pub(super) struct WorkerState {
     /// Explicit reconciliation is observation only, even when it catches a newly committed Turn.
     pub(super) reconciliation_through: Arc<std::sync::atomic::AtomicU64>,
     pub(super) observed_before_execution: bool,
+    pub(super) bus: std::sync::Mutex<Option<crate::timeline::MetaEventBus>>,
 }
 fn product_revision(
     snapshot: &ThreadSnapshot,

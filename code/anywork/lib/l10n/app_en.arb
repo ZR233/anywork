@@ -1930,6 +1930,7 @@
   "threadStatusIdle": "Idle",
   "threadStatusCancelling": "Stopping current execution",
   "threadStatusClosed": "Closed",
+  "threadStatusCloseFailed": "Close failed",
   "toolStatusAwaitingApproval": "Awaiting approval",
   "toolStatusFailed": "Failed",
   "toolStatusDenied": "Denied",

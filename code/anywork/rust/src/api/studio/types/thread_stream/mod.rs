@@ -79,11 +79,11 @@ pub enum BridgeThreadStatus {
     Idle,
     Queued,
     Running,
-    WaitingTool,
     WaitingInteraction,
     Cancelling,
     Closing,
     Closed,
+    CloseFailed,
     Faulted,
 }
 

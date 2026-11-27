@@ -1473,6 +1473,7 @@
   "threadStatusIdle": "空闲",
   "threadStatusCancelling": "正在停止当前执行",
   "threadStatusClosed": "已关闭",
+  "threadStatusCloseFailed": "关闭失败",
   "toolStatusAwaitingApproval": "等待授权",
   "toolStatusFailed": "失败",
   "toolStatusDenied": "已拒绝",

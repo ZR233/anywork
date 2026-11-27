@@ -417,6 +417,17 @@ impl ThreadObservations {
             slot.retire_bus(&bus);
             bus.close().await;
         }
+        for observation in &observations {
+            let bus = observation
+                .state
+                .bus
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            if let Some(bus) = bus {
+                bus.close().await;
+            }
+        }
         Ok(())
     }
 
@@ -464,6 +475,7 @@ impl ThreadObservations {
             channel,
             reconciliation_through: Arc::new(std::sync::atomic::AtomicU64::new(recovered_through)),
             observed_before_execution,
+            bus: std::sync::Mutex::new(None),
         });
         let slot = self.observation_slot(&id);
         let catalogs = self.0.projector.config.subscribe_model_catalogs();

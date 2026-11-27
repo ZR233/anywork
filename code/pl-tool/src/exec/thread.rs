@@ -252,6 +252,11 @@ impl<B: CommandBackend> pl_agent_tool::Tool for ThreadWriteStdinTool<B> {
             pl_tool_command::write_stdin::InputOutcome::Incomplete => Err(ToolError::new(ExecFailure::Process("stdin delivery incomplete; inspect accepted and confirmed offsets before continuing".into())).with_output(output)),
         }
     }
+
+    async fn close(&self) -> Result<(), ToolError> {
+        self.processes.close().await;
+        Ok(())
+    }
 }
 
 impl<B: CommandBackend> ThreadWriteStdinTool<B> {
@@ -445,6 +450,11 @@ impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadE
                 Err(ToolError::new(failure).with_output(output))
             }
         }
+    }
+
+    async fn close(&self) -> Result<(), ToolError> {
+        self.processes.close().await;
+        Ok(())
     }
 }
 

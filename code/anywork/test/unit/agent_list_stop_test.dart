@@ -120,11 +120,12 @@ void main() {
     expect(state.showsControl, isTrue);
   });
 
-  test('正常完成、关闭与退役成员不声称等待调度', () {
+  test('正常完成、关闭、关闭失败与退役成员不声称等待调度', () {
     for (final state in const <StudioAgentState>[
       IdleStudioAgent(),
       ClosingStudioAgent(),
       ClosedStudioAgent(),
+      CloseFailedStudioAgent(),
     ]) {
       final resolved = AgentListStopState.resolve(agent: _agent(state: state));
       expect(resolved.action, AgentListStopAction.none, reason: state.label);
@@ -152,6 +153,7 @@ void main() {
       IdleStudioAgent(),
       ClosingStudioAgent(),
       ClosedStudioAgent(),
+      CloseFailedStudioAgent(),
     ]) {
       final resolved = AgentListStopState.resolve(
         agent: _agent(state: state, canStop: true),
@@ -161,23 +163,28 @@ void main() {
     }
   });
 
-  test('正在关闭的成员即使遗留执行与停止资格也不产生控制', () {
-    for (final phase in const [
-      AgentExecutionPhase.preparing,
-      AgentExecutionPhase.running,
-      AgentExecutionPhase.stopping,
+  test('正在关闭或关闭失败的成员即使遗留执行与停止资格也不产生控制', () {
+    for (final state in const <StudioAgentState>[
+      ClosingStudioAgent(),
+      CloseFailedStudioAgent(),
     ]) {
-      final resolved = AgentListStopState.resolve(
-        agent: _agent(
-          state: const ClosingStudioAgent(),
-          execution: AgentExecutionView(id: 'exec-child-1', phase: phase),
-          canStop: true,
-        ),
-        acceptedExecutionId: 'exec-child-1',
-      );
-      expect(resolved.action, AgentListStopAction.none, reason: '$phase');
-      expect(resolved.canStop, isFalse, reason: '$phase');
-      expect(resolved.showsControl, isFalse, reason: '$phase');
+      for (final phase in const [
+        AgentExecutionPhase.preparing,
+        AgentExecutionPhase.running,
+        AgentExecutionPhase.stopping,
+      ]) {
+        final resolved = AgentListStopState.resolve(
+          agent: _agent(
+            state: state,
+            execution: AgentExecutionView(id: 'exec-child-1', phase: phase),
+            canStop: true,
+          ),
+          acceptedExecutionId: 'exec-child-1',
+        );
+        expect(resolved.action, AgentListStopAction.none, reason: '${state.label}:$phase');
+        expect(resolved.canStop, isFalse, reason: '${state.label}:$phase');
+        expect(resolved.showsControl, isFalse, reason: '${state.label}:$phase');
+      }
     }
   });
 

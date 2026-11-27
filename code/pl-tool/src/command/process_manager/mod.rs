@@ -7,7 +7,7 @@ use std::time::Duration;
 use pl_protocol::PureError;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, Notify};
-use tokio_util::sync::CancellationToken;
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 use super::backend::{
     CommandBackend, CommandOutputSizes, CommandOutputTarget, CommandSpawnRequest, CommandWriter,
@@ -40,6 +40,14 @@ const INTERNAL_BUFFER_BYTES: usize = 64 * 1024;
 pub const MAX_CAPTURE_BYTES: u64 = 16 * 1024 * 1024;
 static NEXT_PROCESS_ID: AtomicU64 = AtomicU64::new(1);
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ProcessManagerLifecycle {
+    #[default]
+    Open,
+    Closing,
+    Closed,
+}
+
 #[derive(Debug)]
 pub struct CommandProcessManager<B>
 where
@@ -48,6 +56,7 @@ where
     state: Arc<std::sync::Mutex<CommandProcessManagerState>>,
     backend: Arc<B>,
     lifetime: Arc<ManagerLifetime>,
+    tasks: TaskTracker,
 }
 
 impl<B> Clone for CommandProcessManager<B>
@@ -59,12 +68,14 @@ where
             state: self.state.clone(),
             backend: self.backend.clone(),
             lifetime: self.lifetime.clone(),
+            tasks: self.tasks.clone(),
         }
     }
 }
 
 #[derive(Debug)]
 struct CommandProcessManagerState {
+    lifecycle: ProcessManagerLifecycle,
     entries: HashMap<String, Arc<CommandProcessEntry>>,
     task_reservations: HashSet<String>,
 }
@@ -216,12 +227,46 @@ where
     pub fn new(backend: Arc<B>) -> Self {
         Self {
             state: Arc::new(std::sync::Mutex::new(CommandProcessManagerState {
+                lifecycle: ProcessManagerLifecycle::Open,
                 entries: HashMap::new(),
                 task_reservations: HashSet::new(),
             })),
             backend,
             lifetime: Arc::new(ManagerLifetime::default()),
+            tasks: TaskTracker::new(),
         }
+    }
+
+    pub fn lifecycle(&self) -> ProcessManagerLifecycle {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lifecycle
+    }
+
+    /// Terminates every running command process tree and waits for all monitor and IO reader tasks.
+    /// Safe to invoke concurrently or repeatedly; no-op once `Closed`.
+    pub async fn close(&self) {
+        {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.lifecycle == ProcessManagerLifecycle::Closed {
+                return;
+            }
+            state.lifecycle = ProcessManagerLifecycle::Closing;
+        }
+        self.lifetime.0.cancel();
+        self.tasks.close();
+        self.tasks.wait().await;
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.entries.clear();
+        state.task_reservations.clear();
+        state.lifecycle = ProcessManagerLifecycle::Closed;
     }
 
     /// The immutable execution binding used by this product task table.
@@ -430,33 +475,50 @@ where
             output_observer: request.output_observer,
             output_failure: output_failure.clone(),
         });
-        {
+        let admitted = {
             let mut state = self
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.task_reservations.remove(&process_id);
-            state.entries.insert(process_id.clone(), entry.clone());
             reservation.active = false;
-        }
-        spawn_lifecycle_task(
-            entry.clone(),
-            child,
-            CommandLifecycle {
-                timeout: start_control
-                    .deadline()
-                    .saturating_duration_since(tokio::time::Instant::now()),
-                task_cancellation: request.cancellation_token,
-                manager_cancellation: self.lifetime.0.clone(),
-                output_failure,
-            },
-        );
+            if state.lifecycle == ProcessManagerLifecycle::Open {
+                state.entries.insert(process_id.clone(), entry.clone());
+                spawn_lifecycle_task(
+                    &self.tasks,
+                    entry.clone(),
+                    child,
+                    CommandLifecycle {
+                        timeout: start_control
+                            .deadline()
+                            .saturating_duration_since(tokio::time::Instant::now()),
+                        task_cancellation: request.cancellation_token,
+                        manager_cancellation: self.lifetime.0.clone(),
+                        output_failure,
+                    },
+                );
 
-        if let Some(stdout) = stdout {
-            tokio::spawn(read_stdout(entry.clone(), stdout));
-        }
-        if let Some(stderr) = stderr {
-            tokio::spawn(read_stderr(entry.clone(), stderr));
+                if let Some(stdout) = stdout {
+                    self.tasks.spawn(read_stdout(entry.clone(), stdout));
+                }
+                if let Some(stderr) = stderr {
+                    self.tasks.spawn(read_stderr(entry.clone(), stderr));
+                }
+                Ok(())
+            } else {
+                Err((child, stdout, stderr))
+            }
+        };
+        if let Err((mut child, stdout, stderr)) = admitted {
+            drop(entry);
+            drop(stdout);
+            drop(stderr);
+            child.cancellation().cancel();
+            let _ = child.wait().await;
+            return Err(tool_error(
+                "exec_command",
+                "Command process manager closed before admission",
+            ));
         }
         Ok(entry)
     }
@@ -466,6 +528,12 @@ where
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.lifecycle != ProcessManagerLifecycle::Open {
+            return Err(tool_error(
+                "exec_command",
+                "Command process manager is closed",
+            ));
+        }
         let id = match task_id {
             Some(id) => {
                 if !id.starts_with("task-") || id.len() > 256 {

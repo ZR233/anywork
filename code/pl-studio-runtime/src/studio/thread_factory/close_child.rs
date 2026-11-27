@@ -87,14 +87,35 @@ impl ChildCloseCoordinator<'_> {
             return Ok(None);
         };
         self.validate_saved(&record)?;
+        let mut updated = false;
         if force && !record.force && !record.worktree_cleanup.is_terminal() {
             record.force = true;
+            updated = true;
+        }
+        if !record.execution_closed || !record.worktree_cleanup.is_terminal() {
+            if record.error.take().is_some() {
+                updated = true;
+            }
+            if record.execution_closed
+                && matches!(record.worktree_cleanup, AgentWorktreeCleanup::Failed { .. })
+            {
+                record.worktree_cleanup = AgentWorktreeCleanup::Pending;
+                updated = true;
+            }
+        }
+        if updated {
             record.changed()?;
             self.factory
                 .services
                 .store
                 .save_agent_close(&record)
                 .await?;
+            self.factory
+                .services
+                .product_events
+                .commit_explicit_close(&record.agent_id)
+                .await?;
+            self.factory.sync_agent_close_recovery(&record);
         }
         if let Some(binding) = &record.worktree
             && !record.worktree_cleanup.is_terminal()
@@ -240,6 +261,7 @@ impl ChildCloseCoordinator<'_> {
             .product_events
             .commit_explicit_close(id)
             .await?;
+        self.factory.sync_agent_close_recovery(&record);
         if record.worktree.is_none()
             && let Some(identity) = self.factory.services.store.workspace_identity(id).await?
         {
@@ -354,14 +376,50 @@ impl StudioThreadFactory {
         let identity = ChildCloseIdentity::acp(&member)?;
         let mut record = self.child_close(&identity).mark_execution_closed().await?;
         match self.cleanup_one_owned_worktree(&mut record).await {
-            Ok(()) => Ok((record.result(), None)),
+            Ok(()) => {
+                self.services
+                    .product_events
+                    .commit_explicit_close(id)
+                    .await?;
+                self.sync_agent_close_recovery(&record);
+                Ok((record.result(), None))
+            }
             Err(error) => {
+                if !record.worktree_cleanup.is_terminal() {
+                    record.worktree_cleanup = AgentWorktreeCleanup::Failed {
+                        path: record
+                            .worktree
+                            .as_ref()
+                            .map(|binding| binding.lease.path.clone()),
+                        error: state_error(&error),
+                    };
+                }
                 record.error = Some(state_error(&error));
                 record.changed()?;
                 self.services.store.save_agent_close(&record).await?;
+                self.services
+                    .product_events
+                    .commit_explicit_close(id)
+                    .await?;
+                self.sync_agent_close_recovery(&record);
                 Ok((record.result(), record.error))
             }
         }
+    }
+
+    /// Live-sync `agent-close:{id}` into `StudioRecoveryRegistry` whenever a close record
+    /// advances to a failure or terminal completion.
+    pub(crate) fn sync_agent_close_recovery(&self, record: &AgentCloseRecord) {
+        let issue_id = format!("agent-close:{}", record.agent_id);
+        let issue = crate::studio::store::agent_close::agent_close_recovery_issue(record);
+        self.services.recovery.update_if_current(
+            &issue_id,
+            issue,
+            || true,
+            |state| {
+                self.services.product_events.emit_recovery_state(state);
+            },
+        );
     }
 
     /// Native worktree cleanup re-proves the same saved binding before touching Git.
@@ -383,6 +441,11 @@ impl StudioThreadFactory {
             record.error = Some(state_error(error));
             record.changed()?;
             self.services.store.save_agent_close(&record).await?;
+            self.services
+                .product_events
+                .commit_explicit_close(id)
+                .await?;
+            self.sync_agent_close_recovery(&record);
         }
         Ok(())
     }

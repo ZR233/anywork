@@ -811,6 +811,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_bridge_child_interactions_data(dynamic raw);
 
   @protected
+  BridgeCloseFailedAgent dco_decode_box_autoadd_bridge_close_failed_agent(
+    dynamic raw,
+  );
+
+  @protected
   BridgeClosedAgent dco_decode_box_autoadd_bridge_closed_agent(dynamic raw);
 
   @protected
@@ -2343,6 +2348,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeChildInteractionsState dco_decode_bridge_child_interactions_state(
     dynamic raw,
   );
+
+  @protected
+  BridgeCloseFailedAgent dco_decode_bridge_close_failed_agent(dynamic raw);
 
   @protected
   BridgeClosedAgent dco_decode_bridge_closed_agent(dynamic raw);
@@ -5550,6 +5558,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeCloseFailedAgent sse_decode_box_autoadd_bridge_close_failed_agent(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeClosedAgent sse_decode_box_autoadd_bridge_closed_agent(
     SseDeserializer deserializer,
   );
@@ -7564,6 +7577,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeChildInteractionsState sse_decode_bridge_child_interactions_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeCloseFailedAgent sse_decode_bridge_close_failed_agent(
     SseDeserializer deserializer,
   );
 
@@ -11469,6 +11487,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_bridge_close_failed_agent(
+    BridgeCloseFailedAgent self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_bridge_closed_agent(
     BridgeClosedAgent self,
     SseSerializer serializer,
@@ -13814,6 +13838,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_child_interactions_state(
     BridgeChildInteractionsState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_close_failed_agent(
+    BridgeCloseFailedAgent self,
     SseSerializer serializer,
   );
 

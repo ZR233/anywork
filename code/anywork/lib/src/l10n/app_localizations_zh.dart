@@ -3853,6 +3853,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get threadStatusClosed => '已关闭';
 
   @override
+  String get threadStatusCloseFailed => '关闭失败';
+
+  @override
   String get toolStatusAwaitingApproval => '等待授权';
 
   @override

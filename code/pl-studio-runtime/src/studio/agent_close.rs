@@ -62,7 +62,7 @@ pub(crate) fn encode() -> Result<OpaquePayload> {
 /// The Session has sealed the child's admission. Pause the existing queue before saving
 /// the durable close marker, leaving already admitted execution to the normal close path.
 pub(crate) async fn commit(thread: &pl_core::thread::ThreadHandle) -> Result<()> {
-    thread.pause_execution().await?;
+    thread.drain_execution().await?;
     if !is_explicitly_closed(&thread.snapshot())? {
         thread
             .mutate_extensions(vec![pl_core::thread::extensions::ExtensionMutation::Put {
@@ -83,12 +83,14 @@ pub(in crate::studio) fn directory_status(
 ) -> crate::ThreadStatus {
     use crate::ThreadStatus;
     if explicit {
-        if status == ThreadStatus::Closed {
-            status
-        } else {
-            ThreadStatus::Closing
+        match status {
+            ThreadStatus::Closed | ThreadStatus::CloseFailed => status,
+            _ => ThreadStatus::Closing,
         }
-    } else if matches!(status, ThreadStatus::Closed | ThreadStatus::Closing) {
+    } else if matches!(
+        status,
+        ThreadStatus::Closed | ThreadStatus::Closing | ThreadStatus::CloseFailed
+    ) {
         ThreadStatus::Idle
     } else {
         status

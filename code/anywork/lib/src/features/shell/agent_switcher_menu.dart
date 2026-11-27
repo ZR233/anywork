@@ -177,6 +177,9 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
     BuildContext context,
     List<StudioAgentView> agents,
   ) {
+    if (agents.any((agent) => _nativeState(agent) is CloseFailedStudioAgent)) {
+      return context.colors.error;
+    }
     if (agents.any(_hasPendingInteraction)) {
       return context.statusColors.warning;
     }
@@ -190,6 +193,9 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
   }
 
   Color _statusColor(BuildContext context, StudioAgentView agent) {
+    if (_nativeState(agent) is CloseFailedStudioAgent) {
+      return context.colors.error;
+    }
     if (_hasPendingInteraction(agent)) {
       return context.statusColors.warning;
     }
@@ -705,4 +711,5 @@ ThreadStatusView _agentThreadStatus(StudioAgentState state) => switch (state) {
   WaitingInteractionStudioAgent() => ThreadStatusView.waitingInteraction,
   ClosingStudioAgent() => ThreadStatusView.closing,
   ClosedStudioAgent() => ThreadStatusView.closed,
+  CloseFailedStudioAgent() => ThreadStatusView.closeFailed,
 };

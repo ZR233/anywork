@@ -3854,7 +3854,11 @@ void main() {
     await _close(client, transport);
   });
 
-  for (final status in [ThreadStatusView.closing, ThreadStatusView.closed]) {
+  for (final status in [
+    ThreadStatusView.closing,
+    ThreadStatusView.closed,
+    ThreadStatusView.closeFailed,
+  ]) {
     test(
       '${status.name} is permanently read-only without consuming the draft or admitting a cold child',
       () async {

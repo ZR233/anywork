@@ -33,6 +33,23 @@ pub(crate) struct AgentCloseGitGrant {
     pub removal_started: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentCloseStatus {
+    Closing,
+    CloseFailed,
+    Closed,
+}
+
+impl AgentCloseStatus {
+    pub(crate) fn thread_status(self) -> crate::ThreadStatus {
+        match self {
+            Self::Closing => crate::ThreadStatus::Closing,
+            Self::CloseFailed => crate::ThreadStatus::CloseFailed,
+            Self::Closed => crate::ThreadStatus::Closed,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct AgentCloseRecord {
@@ -61,6 +78,65 @@ impl AgentCloseRecord {
             worktree_cleanup: self.worktree_cleanup.clone(),
         }
     }
+
+    pub(crate) fn lifecycle_status(&self) -> AgentCloseStatus {
+        if self.error.is_some()
+            || matches!(self.worktree_cleanup, AgentWorktreeCleanup::Failed { .. })
+        {
+            AgentCloseStatus::CloseFailed
+        } else if self.execution_closed && self.worktree_cleanup.is_terminal() {
+            AgentCloseStatus::Closed
+        } else {
+            AgentCloseStatus::Closing
+        }
+    }
+}
+
+pub(in crate::studio) fn agent_close_recovery_issue(
+    record: &AgentCloseRecord,
+) -> Option<crate::StudioRecoveryIssue> {
+    use crate::{
+        StudioRecoveryImpact, StudioRecoveryIssue, StudioRecoveryIssueAction,
+        StudioRecoveryIssueCategory, StudioRecoveryIssueScope,
+    };
+    let residual_registration = matches!(
+        record.worktree_cleanup,
+        AgentWorktreeCleanup::NotPresent {
+            registration_present: true,
+            ..
+        }
+    );
+    if record.execution_closed
+        && record.worktree_cleanup.is_terminal()
+        && record.error.is_none()
+        && !residual_registration
+    {
+        return None;
+    }
+    Some(StudioRecoveryIssue {
+        id: format!("agent-close:{}", record.agent_id),
+        scope: StudioRecoveryIssueScope::Thread,
+        category: StudioRecoveryIssueCategory::Storage,
+        impact: StudioRecoveryImpact::Advisory,
+        action: if residual_registration && record.error.is_none() {
+            StudioRecoveryIssueAction::None
+        } else {
+            StudioRecoveryIssueAction::Retry
+        },
+        workspace_id: Some(record.workspace_id.clone()),
+        thread_id: Some(record.agent_id.clone()),
+        message: record.error.as_ref().map_or_else(
+            || {
+                if residual_registration {
+                    "Closed child path is absent; its exact Git registration was preserved without pruning".into()
+                } else {
+                    "Explicit child close has unfinished execution or owned-worktree cleanup".into()
+                }
+            },
+            |error| error.message.clone(),
+        ),
+        worktree: None,
+    })
 }
 
 impl PersistedStudioObject for AgentCloseRecord {
