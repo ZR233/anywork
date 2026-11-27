@@ -769,9 +769,9 @@
   "timelineToolSearchSucceeded": "已搜索",
   "timelineToolSearchRunning": "正在搜索",
   "timelineToolSearchFailed": "搜索失败",
-  "timelineToolAgentSucceeded": "已启动子代理",
-  "timelineToolAgentRunning": "子代理运行中",
-  "timelineToolAgentFailed": "子代理失败",
+  "timelineToolAgentSucceeded": "已启动子智能体",
+  "timelineToolAgentRunning": "子智能体运行中",
+  "timelineToolAgentFailed": "子智能体失败",
   "timelineToolMessageSucceeded": "已发送消息",
   "timelineToolMessageRunning": "正在发送消息",
   "timelineToolMessageFailed": "消息发送失败",
@@ -805,7 +805,7 @@
   "timelineTurnStopped": "本轮已停止",
   "timelineTurnCancelled": "本轮已取消",
   "timelineTurnRuntimeShutdown": "运行时已关闭，本轮已停止",
-  "timelineTurnAgentClosed": "代理已关闭，本轮已停止",
+  "timelineTurnAgentClosed": "智能体已关闭，本轮已停止",
   "timelineTurnRecoveryStopped": "恢复期间已停止本轮",
   "timelineTurnCoalesced": "本轮已并入后续轮次",
   "timelineToolCompleted": "{name} 已完成",
@@ -1018,7 +1018,7 @@
   "settingsNoSkillsTitle": "没有找到技能",
   "settingsNoSkillsMessage": "换个过滤条件，或重新发现技能。",
   "settingsRoleExplorerDescription": "探索代码并收集上下文。",
-  "settingsRolePlannerDescription": "理解需求、制定计划、协调子代理、整合与验证结果。",
+  "settingsRolePlannerDescription": "理解需求、制定计划、协调子智能体、整合与验证结果。",
   "settingsRoleExecutorDescription": "落实修改并运行工具。",
   "settingsRoleWorktreeExecutorDescription": "在隔离的 Git 工作树中落实修改并运行工具。",
   "settingsRoleReviewerDescription": "审查结果并验证风险。",
@@ -1254,7 +1254,7 @@
     }
   },
   "settingsAgentsTitle": "智能体配置",
-  "settingsAgentsSubtitle": "子代理可按用途配置和启用；目录模式仅限制内置工具的文件写入，不是操作系统沙箱。",
+  "settingsAgentsSubtitle": "子智能体可按用途配置和启用；目录模式仅限制内置工具的文件写入，不是操作系统沙箱。",
   "settingsAgentsAddUserProfile": "添加用户智能体配置",
   "settingsAgentsEditTooltip": "编辑",
   "settingsWorktreeRecoveryTitle": "工作目录检查（{count}）",
@@ -1344,8 +1344,8 @@
   "settingsPriceOutput": "输出",
   "settingsPriceCacheRead": "缓存读取",
   "settingsPriceCacheWrite": "缓存写入",
-  "settingsSystemAgentsGroup": "系统子代理",
-  "settingsUserAgentsGroup": "用户子代理",
+  "settingsSystemAgentsGroup": "系统子智能体",
+  "settingsUserAgentsGroup": "用户子智能体",
   "settingsAppearanceGroup": "界面与会话",
   "settingsNetworkGroup": "搜索与联网",
   "settingsUpdatesGroup": "应用更新",
@@ -1512,7 +1512,7 @@
   "workspaceLoading": "正在加载会话历史…",
   "recoveryChecking": "正在检查历史会话和工作区…",
   "recoveryCheckFailed": "历史会话和工作区检查未完成",
-  "agentRoleRetired": "该子代理角色已停用，仅可查看历史记录。",
+  "agentRoleRetired": "该子智能体角色已停用，仅可查看历史记录。",
   "conversationActivityPreparing": "准备中",
   "conversationActivityCompacting": "正在压缩上下文",
   "conversationActivityRunningTool": "执行中",
@@ -1901,7 +1901,7 @@
   "accountProtocolGemini": "Google Gemini",
   "accountProtocolCustom": "自定义（OpenAI 兼容）",
   "timelineWaitToolsTitle": "等待工具完成",
-  "timelineWaitMessagesTitle": "等待子代理或新消息",
+  "timelineWaitMessagesTitle": "等待子智能体或新消息",
   "timelineWaitTimerTitle": "计时器",
   "timelineWaitTimerElapsed": "计时完成",
   "timelineWaitReady": "已有等待来源就绪",
@@ -1945,7 +1945,7 @@
   "timelineWaitStatusCancelled": "已取消",
   "timelineWaitStatusInterrupted": "已停止",
   "conversationActivityWaitingTools": "等待工具完成",
-  "conversationActivityWaitingMessages": "等待子代理或新消息",
+  "conversationActivityWaitingMessages": "等待子智能体或新消息",
   "conversationActivityWaitingTimer": "计时器",
   "settingsModelAutoCompactAdjusted": "已按模型最新的最大上下文调整生效阈值。",
   "modelContextParametersInvalid": "上下文参数不一致",
@@ -3467,13 +3467,124 @@
     }
   },
   "conversationActivityAttentionDefault": "需要确认",
-  "conversationActivityWaitingChild": "子代理等待处理",
+  "conversationActivityWaitingChild": "子智能体等待处理",
   "liveWorkKindThinking": "思考",
   "liveWorkKindRead": "读取",
   "liveWorkKindEdit": "编辑",
   "liveWorkKindSearch": "搜索",
   "liveWorkKindExec": "运行",
   "liveWorkKindWait": "等待",
-  "liveWorkKindAgent": "子代理",
-  "liveWorkKindTool": "工具"
+  "liveWorkKindAgent": "子智能体",
+  "liveWorkKindTool": "工具",
+  "timelineToolNameReadAgentSession": "读取智能体会话",
+  "timelineToolNameEvaluateAgent": "评估子智能体",
+  "timelineToolNameListAgents": "列出子智能体",
+  "timelineToolNameInterruptAgent": "中断子智能体",
+  "timelineToolNameCloseAgent": "关闭子智能体",
+  "timelineToolNameWaitAgent": "等待子智能体",
+  "timelineToolReadAgentSessionRunning": "正在读取会话",
+  "timelineToolReadAgentSessionSucceeded": "已读取会话",
+  "timelineToolReadAgentSessionFailed": "读取会话失败",
+  "timelineToolEvaluateAgentRunning": "正在评估子智能体",
+  "timelineToolEvaluateAgentSucceeded": "已评估子智能体",
+  "timelineToolEvaluateAgentFailed": "评估子智能体失败",
+  "timelineToolListAgentsRunning": "正在列出子智能体",
+  "timelineToolListAgentsSucceeded": "已列出子智能体",
+  "timelineToolListAgentsFailed": "列出子智能体失败",
+  "timelineToolInterruptAgentRunning": "正在中断子智能体",
+  "timelineToolInterruptAgentSucceeded": "已中断子智能体",
+  "timelineToolInterruptAgentFailed": "中断子智能体失败",
+  "timelineToolCloseAgentRunning": "正在关闭子智能体",
+  "timelineToolCloseAgentSucceeded": "已关闭子智能体",
+  "timelineToolCloseAgentFailed": "关闭子智能体失败",
+  "timelineToolWaitAgentRunning": "正在等待子智能体",
+  "timelineToolWaitAgentSucceeded": "已获取子智能体汇报",
+  "timelineToolWaitAgentFailed": "等待子智能体失败",
+  "timelineToolDetailTarget": "目标",
+  "timelineToolDetailAgent": "智能体",
+  "timelineToolDetailRole": "角色",
+  "timelineToolDetailRating": "评分",
+  "timelineToolDetailComment": "评语",
+  "timelineToolDetailCursor": "游标",
+  "timelineToolDetailCount": "数量",
+  "timelineToolBackgroundStarted": "{name} 已转入后台",
+  "@timelineToolBackgroundStarted": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "timelineToolBackgrounded": "{name} 后台运行中",
+  "@timelineToolBackgrounded": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "timelineToolWaiting": "{name} 等待中",
+  "@timelineToolWaiting": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "timelineToolStateBackgroundStarted": "已转入后台",
+  "timelineToolStateBackgrounded": "后台运行",
+  "timelineToolStateWaiting": "等待中",
+  "workGroupAgentRole": "角色",
+  "workGroupAgentTask": "任务",
+  "workGroupAgentStatus": "状态",
+  "workGroupAgentRunning": "子智能体运行中 · {name}",
+  "@workGroupAgentRunning": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "workGroupAgentCompleted": "子智能体已完成 · {name}",
+  "@workGroupAgentCompleted": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "workGroupAgentFailed": "子智能体失败 · {name}",
+  "@workGroupAgentFailed": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "workGroupAgentCancelled": "子智能体已取消 · {name}",
+  "@workGroupAgentCancelled": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "workGroupFileChangeTitle": "文件变更",
+  "workGroupFileChanged": "修改文件 · {path}",
+  "@workGroupFileChanged": {
+    "placeholders": {
+      "path": {
+        "type": "String"
+      }
+    }
+  },
+  "workGroupSkillTitle": "技能",
+  "workGroupSkillActivated": "激活技能 · {name}",
+  "@workGroupSkillActivated": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  }
 }

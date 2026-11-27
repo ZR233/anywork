@@ -218,7 +218,7 @@ pub enum BridgeTimelineItem {
     },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum BridgeWorkGroupMember {
     Reasoning {
         id: String,
@@ -309,18 +309,6 @@ pub enum BridgeTimelinePatch {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct BridgeLiveWorkItem {
-    pub id: String,
-    pub call_id: Option<String>,
-    pub kind: String,
-    pub tool_name: String,
-    pub status: String,
-    pub summary: String,
-    pub started_at_ms: Option<i64>,
-    pub finished_at_ms: Option<i64>,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct BridgeLiveAttention {
     pub id: String,
     pub kind: String,
@@ -332,7 +320,7 @@ pub struct BridgeLiveAttention {
 pub enum BridgeLiveStatusPhase {
     Idle,
     Working {
-        items: Vec<BridgeLiveWorkItem>,
+        items: Vec<BridgeWorkGroupMember>,
         reasoning_preview: Option<String>,
         started_at_ms: Option<i64>,
     },

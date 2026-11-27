@@ -8,6 +8,24 @@ import 'timeline_activity_row.dart';
 import 'timeline_content_range_view.dart';
 import 'timeline_markdown.dart';
 
+/// 将思考摘要中的换行与常见 Markdown 标记剥离为适合 Tooltip 与无障碍朗读的单行纯文本。
+String timelineMarkdownPlainText(String text) {
+  final collapsedLines = text
+      .replaceAll(RegExp(r'[\r\n]+'), ' ')
+      .replaceAll('****', ' ');
+  final withoutLinks = collapsedLines.replaceAllMapped(
+    RegExp(r'!?\[([^\]]+)\]\([^)]*\)'),
+    (match) => match.group(1) ?? '',
+  );
+  final stripped = withoutLinks
+      .replaceAll('**', '')
+      .replaceAll('__', '')
+      .replaceAll('~~', '')
+      .replaceAll('*', '')
+      .replaceAll('`', '');
+  return stripped.replaceAll(RegExp(r'\s+'), ' ').trim();
+}
+
 /// 思考成员只有一行入口：概要优先，正文存在时才提供展开能力。
 /// 读取、订阅和展开资格由连接层持有，实时和历史复用此视图。
 class TimelineReasoningView extends StatelessWidget {
@@ -17,6 +35,9 @@ class TimelineReasoningView extends StatelessWidget {
     this.body,
     this.startedAt,
     this.finishedAt,
+    this.startedAtMs,
+    this.finishedAtMs,
+    this.now,
     this.running = false,
     this.outcome,
     this.diagnostic,
@@ -30,6 +51,9 @@ class TimelineReasoningView extends StatelessWidget {
   final Widget? body;
   final int? startedAt;
   final int? finishedAt;
+  final int? startedAtMs;
+  final int? finishedAtMs;
+  final DateTime Function()? now;
   final bool running;
   final String? outcome;
   final String? diagnostic;
@@ -37,52 +61,88 @@ class TimelineReasoningView extends StatelessWidget {
   final ValueChanged<bool>? onExpansionChanged;
 
   @override
-  Widget build(BuildContext context) => TimelineActivityClock.fromUnixSeconds(
-    startedAt: startedAt,
-    finishedAt: finishedAt,
-    running: running,
-    builder: (context, seconds) {
-      final hasSummary = summary?.trim().isNotEmpty ?? false;
-      final failed = outcome == 'failed' || outcome == 'budgetLimited';
-      final fallback = switch (outcome) {
-        'failed' => context.l10n.timelineReasoningFailed,
-        'cancelled' => context.l10n.timelineReasoningCancelled,
-        'budgetLimited' => context.l10n.timelineReasoningBudgetLimited,
-        _ when seconds != null => activityDurationLabel(
-          context,
-          seconds,
-          kind: ActivityDurationKind.reasoning,
-        ),
-        _ =>
-          running
-              ? context.l10n.timelineReasoningActive
-              : context.l10n.timelineReasoningEnded,
-      };
-      final label = hasSummary ? summary! : fallback;
-      Widget title(BuildContext context, bool expanded) => TimelineActivityRow(
-        icon: outcome == 'cancelled'
-            ? Icons.stop_circle_outlined
-            : Icons.psychology_alt_outlined,
-        isIssue: failed,
-        active: running,
-        label: label,
-        labelWidget:
-            summaryBuilder?.call(fallback) ??
-            (hasSummary ? TimelineReasoningSummary(text: summary!) : null),
-        semanticsLabel: diagnostic == null ? label : '$label\n$diagnostic',
-        expanded: expanded,
-        expandable: body != null,
-      );
+  Widget build(BuildContext context) {
+    final reducedMotion = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
+    final isRunning = running || outcome == 'running';
+    final effectiveStartedAtMs =
+        startedAtMs ??
+        (startedAt == null
+            ? null
+            : startedAt! * Duration.millisecondsPerSecond);
+    final effectiveFinishedAtMs =
+        finishedAtMs ??
+        (finishedAt == null
+            ? null
+            : finishedAt! * Duration.millisecondsPerSecond);
+    return TimelineActivityClock(
+      startedAtMillis: effectiveStartedAtMs,
+      finishedAtMillis: effectiveFinishedAtMs,
+      running: isRunning,
+      now: now,
+      builder: (context, seconds) {
+        final hasSummary = summary?.trim().isNotEmpty ?? false;
+        final failed = outcome == 'failed' || outcome == 'budgetLimited';
+        final fallback = switch (outcome) {
+          'failed' => context.l10n.timelineReasoningFailed,
+          'cancelled' => context.l10n.timelineReasoningCancelled,
+          'budgetLimited' => context.l10n.timelineReasoningBudgetLimited,
+          _ when seconds != null => activityDurationLabel(
+            context,
+            seconds,
+            kind: ActivityDurationKind.reasoning,
+          ),
+          _ =>
+            isRunning
+                ? context.l10n.timelineReasoningActive
+                : context.l10n.timelineReasoningEnded,
+        };
+        final plainSummary = hasSummary
+            ? timelineMarkdownPlainText(summary!)
+            : '';
+        final label = hasSummary && plainSummary.isNotEmpty
+            ? plainSummary
+            : fallback;
+        final meta = hasSummary && seconds != null
+            ? activityDurationLabel(
+                context,
+                seconds,
+                kind: ActivityDurationKind.elapsed,
+              )
+            : null;
+        final semantics = [
+          meta == null ? label : '$label，$meta',
+          ?diagnostic,
+        ].join('\n');
+        Widget title(BuildContext context, bool expanded) =>
+            TimelineActivityRow(
+              icon: outcome == 'cancelled'
+                  ? Icons.stop_circle_outlined
+                  : Icons.psychology_alt_outlined,
+              isIssue: failed,
+              active: isRunning && !reducedMotion,
+              indicatorStyle: TimelineActivityIndicatorStyle.circularProgress,
+              label: label,
+              labelWidget:
+                  summaryBuilder?.call(fallback) ??
+                  (hasSummary
+                      ? TimelineReasoningSummary(text: summary!)
+                      : null),
+              meta: meta,
+              semanticsLabel: semantics,
+              expanded: expanded,
+              expandable: body != null,
+            );
 
-      if (body == null) return title(context, false);
-      return TimelineActivityDisclosure(
-        initiallyExpanded: initiallyExpanded,
-        onExpansionChanged: onExpansionChanged,
-        titleBuilder: title,
-        children: [TimelineBodyReadIntent(child: body!)],
-      );
-    },
-  );
+        if (body == null) return title(context, false);
+        return TimelineActivityDisclosure(
+          initiallyExpanded: initiallyExpanded,
+          onExpansionChanged: onExpansionChanged,
+          titleBuilder: title,
+          children: [TimelineBodyReadIntent(child: body!)],
+        );
+      },
+    );
+  }
 }
 
 /// 概要只在一行内排版；复用正文解析器，关闭链接和媒体动作。
@@ -110,7 +170,9 @@ class TimelineReasoningSummary extends StatelessWidget {
           color: context.colors.onSurfaceVariant,
           height: 1.5,
         );
-    final singleLine = text.replaceAll(RegExp(r'[\r\n]+'), ' ');
+    final singleLine = text
+        .replaceAll(RegExp(r'[\r\n]+'), ' ')
+        .replaceAll('****', '** **');
     if (!timelineNeedsSafeMarkdown(singleLine)) {
       return Text(
         singleLine,

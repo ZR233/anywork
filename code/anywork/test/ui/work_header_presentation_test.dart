@@ -320,4 +320,28 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
+
+  testWidgets(
+    'TimelineReasoningView normalizes **** and avoids duplicate semantics',
+    (tester) async {
+      await tester.pumpWidget(
+        _host(
+          const TimelineReasoningView(
+            summary: '**First****Second**',
+            startedAt: 100,
+            finishedAt: 103,
+          ),
+        ),
+      );
+
+      final row = tester.widget<TimelineActivityRow>(
+        find.byType(TimelineActivityRow),
+      );
+      expect(row.label, 'First Second');
+      expect(row.semanticsLabel, 'First Second，用时 3 秒');
+      expect(find.text('用时 3 秒'), findsOneWidget);
+      expect(find.byType(Tooltip), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 }

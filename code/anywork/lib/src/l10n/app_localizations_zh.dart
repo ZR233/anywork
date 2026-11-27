@@ -2127,13 +2127,13 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineToolSearchFailed => '搜索失败';
 
   @override
-  String get timelineToolAgentSucceeded => '已启动子代理';
+  String get timelineToolAgentSucceeded => '已启动子智能体';
 
   @override
-  String get timelineToolAgentRunning => '子代理运行中';
+  String get timelineToolAgentRunning => '子智能体运行中';
 
   @override
-  String get timelineToolAgentFailed => '子代理失败';
+  String get timelineToolAgentFailed => '子智能体失败';
 
   @override
   String get timelineToolMessageSucceeded => '已发送消息';
@@ -2235,7 +2235,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineTurnRuntimeShutdown => '运行时已关闭，本轮已停止';
 
   @override
-  String get timelineTurnAgentClosed => '代理已关闭，本轮已停止';
+  String get timelineTurnAgentClosed => '智能体已关闭，本轮已停止';
 
   @override
   String get timelineTurnRecoveryStopped => '恢复期间已停止本轮';
@@ -2839,7 +2839,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsRoleExplorerDescription => '探索代码并收集上下文。';
 
   @override
-  String get settingsRolePlannerDescription => '理解需求、制定计划、协调子代理、整合与验证结果。';
+  String get settingsRolePlannerDescription => '理解需求、制定计划、协调子智能体、整合与验证结果。';
 
   @override
   String get settingsRoleExecutorDescription => '落实修改并运行工具。';
@@ -3304,7 +3304,7 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get settingsAgentsSubtitle =>
-      '子代理可按用途配置和启用；目录模式仅限制内置工具的文件写入，不是操作系统沙箱。';
+      '子智能体可按用途配置和启用；目录模式仅限制内置工具的文件写入，不是操作系统沙箱。';
 
   @override
   String get settingsAgentsAddUserProfile => '添加用户智能体配置';
@@ -3561,10 +3561,10 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsPriceCacheWrite => '缓存写入';
 
   @override
-  String get settingsSystemAgentsGroup => '系统子代理';
+  String get settingsSystemAgentsGroup => '系统子智能体';
 
   @override
-  String get settingsUserAgentsGroup => '用户子代理';
+  String get settingsUserAgentsGroup => '用户子智能体';
 
   @override
   String get settingsAppearanceGroup => '界面与会话';
@@ -3970,7 +3970,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get recoveryCheckFailed => '历史会话和工作区检查未完成';
 
   @override
-  String get agentRoleRetired => '该子代理角色已停用，仅可查看历史记录。';
+  String get agentRoleRetired => '该子智能体角色已停用，仅可查看历史记录。';
 
   @override
   String get conversationActivityPreparing => '准备中';
@@ -4769,7 +4769,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineWaitToolsTitle => '等待工具完成';
 
   @override
-  String get timelineWaitMessagesTitle => '等待子代理或新消息';
+  String get timelineWaitMessagesTitle => '等待子智能体或新消息';
 
   @override
   String get timelineWaitTimerTitle => '计时器';
@@ -4844,7 +4844,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get conversationActivityWaitingTools => '等待工具完成';
 
   @override
-  String get conversationActivityWaitingMessages => '等待子代理或新消息';
+  String get conversationActivityWaitingMessages => '等待子智能体或新消息';
 
   @override
   String get conversationActivityWaitingTimer => '计时器';
@@ -8074,7 +8074,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get conversationActivityAttentionDefault => '需要确认';
 
   @override
-  String get conversationActivityWaitingChild => '子代理等待处理';
+  String get conversationActivityWaitingChild => '子智能体等待处理';
 
   @override
   String get liveWorkKindThinking => '思考';
@@ -8095,8 +8095,170 @@ class AppLocalizationsZh extends AppLocalizations {
   String get liveWorkKindWait => '等待';
 
   @override
-  String get liveWorkKindAgent => '子代理';
+  String get liveWorkKindAgent => '子智能体';
 
   @override
   String get liveWorkKindTool => '工具';
+
+  @override
+  String get timelineToolNameReadAgentSession => '读取智能体会话';
+
+  @override
+  String get timelineToolNameEvaluateAgent => '评估子智能体';
+
+  @override
+  String get timelineToolNameListAgents => '列出子智能体';
+
+  @override
+  String get timelineToolNameInterruptAgent => '中断子智能体';
+
+  @override
+  String get timelineToolNameCloseAgent => '关闭子智能体';
+
+  @override
+  String get timelineToolNameWaitAgent => '等待子智能体';
+
+  @override
+  String get timelineToolReadAgentSessionRunning => '正在读取会话';
+
+  @override
+  String get timelineToolReadAgentSessionSucceeded => '已读取会话';
+
+  @override
+  String get timelineToolReadAgentSessionFailed => '读取会话失败';
+
+  @override
+  String get timelineToolEvaluateAgentRunning => '正在评估子智能体';
+
+  @override
+  String get timelineToolEvaluateAgentSucceeded => '已评估子智能体';
+
+  @override
+  String get timelineToolEvaluateAgentFailed => '评估子智能体失败';
+
+  @override
+  String get timelineToolListAgentsRunning => '正在列出子智能体';
+
+  @override
+  String get timelineToolListAgentsSucceeded => '已列出子智能体';
+
+  @override
+  String get timelineToolListAgentsFailed => '列出子智能体失败';
+
+  @override
+  String get timelineToolInterruptAgentRunning => '正在中断子智能体';
+
+  @override
+  String get timelineToolInterruptAgentSucceeded => '已中断子智能体';
+
+  @override
+  String get timelineToolInterruptAgentFailed => '中断子智能体失败';
+
+  @override
+  String get timelineToolCloseAgentRunning => '正在关闭子智能体';
+
+  @override
+  String get timelineToolCloseAgentSucceeded => '已关闭子智能体';
+
+  @override
+  String get timelineToolCloseAgentFailed => '关闭子智能体失败';
+
+  @override
+  String get timelineToolWaitAgentRunning => '正在等待子智能体';
+
+  @override
+  String get timelineToolWaitAgentSucceeded => '已获取子智能体汇报';
+
+  @override
+  String get timelineToolWaitAgentFailed => '等待子智能体失败';
+
+  @override
+  String get timelineToolDetailTarget => '目标';
+
+  @override
+  String get timelineToolDetailAgent => '智能体';
+
+  @override
+  String get timelineToolDetailRole => '角色';
+
+  @override
+  String get timelineToolDetailRating => '评分';
+
+  @override
+  String get timelineToolDetailComment => '评语';
+
+  @override
+  String get timelineToolDetailCursor => '游标';
+
+  @override
+  String get timelineToolDetailCount => '数量';
+
+  @override
+  String timelineToolBackgroundStarted(String name) {
+    return '$name 已转入后台';
+  }
+
+  @override
+  String timelineToolBackgrounded(String name) {
+    return '$name 后台运行中';
+  }
+
+  @override
+  String timelineToolWaiting(String name) {
+    return '$name 等待中';
+  }
+
+  @override
+  String get timelineToolStateBackgroundStarted => '已转入后台';
+
+  @override
+  String get timelineToolStateBackgrounded => '后台运行';
+
+  @override
+  String get timelineToolStateWaiting => '等待中';
+
+  @override
+  String get workGroupAgentRole => '角色';
+
+  @override
+  String get workGroupAgentTask => '任务';
+
+  @override
+  String get workGroupAgentStatus => '状态';
+
+  @override
+  String workGroupAgentRunning(String name) {
+    return '子智能体运行中 · $name';
+  }
+
+  @override
+  String workGroupAgentCompleted(String name) {
+    return '子智能体已完成 · $name';
+  }
+
+  @override
+  String workGroupAgentFailed(String name) {
+    return '子智能体失败 · $name';
+  }
+
+  @override
+  String workGroupAgentCancelled(String name) {
+    return '子智能体已取消 · $name';
+  }
+
+  @override
+  String get workGroupFileChangeTitle => '文件变更';
+
+  @override
+  String workGroupFileChanged(String path) {
+    return '修改文件 · $path';
+  }
+
+  @override
+  String get workGroupSkillTitle => '技能';
+
+  @override
+  String workGroupSkillActivated(String name) {
+    return '激活技能 · $name';
+  }
 }

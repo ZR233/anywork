@@ -3,8 +3,14 @@ import 'dart:collection';
 import '../state/chat_item_presentation.dart';
 import '../state/tool_presentation.dart';
 import 'items/acp/acp_tool_item.dart';
+import 'items/collaboration/close_agent_tool_item.dart';
+import 'items/collaboration/evaluate_agent_tool_item.dart';
+import 'items/collaboration/interrupt_agent_tool_item.dart';
+import 'items/collaboration/list_agents_tool_item.dart';
+import 'items/collaboration/read_agent_session_tool_item.dart';
 import 'items/collaboration/send_message_tool_item.dart';
 import 'items/collaboration/spawn_agent_tool_item.dart';
+import 'items/collaboration/wait_agent_tool_item.dart';
 import 'items/command/exec_tool_item.dart';
 import 'items/command/write_stdin_tool_item.dart';
 import 'items/filesystem/apply_patch_tool_item.dart';
@@ -119,7 +125,7 @@ class TimelineToolItemRegistry {
       resolve(TimelineToolMatchContext.fromChatItem(item));
 }
 
-/// Default application registry of all 36 built-in tools, ACP peer tools,
+/// Default application registry of all 42 built-in tools, ACP peer tools,
 /// plus `generic@1`.
 final TimelineToolItemRegistry timelineToolItemRegistry =
     TimelineToolItemRegistry(
@@ -155,6 +161,12 @@ final TimelineToolItemRegistry timelineToolItemRegistry =
         // Collaboration & subagents
         SpawnAgentToolItem(),
         SendMessageToolItem(),
+        ReadAgentSessionToolItem(),
+        EvaluateAgentToolItem(),
+        ListAgentsToolItem(),
+        InterruptAgentToolItem(),
+        CloseAgentToolItem(),
+        WaitAgentToolItem(),
 
         // Wait & timers
         WaitToolItem(),

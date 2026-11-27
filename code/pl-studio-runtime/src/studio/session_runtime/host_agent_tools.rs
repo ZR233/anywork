@@ -113,7 +113,9 @@ pub(crate) fn register<S: AgentToolSink>(
             presentation: match kind {
                 AgentControlKind::Spawn => Some("builtin.spawn_agent@1"),
                 AgentControlKind::Send => Some("builtin.send_message@1"),
-                _ => None,
+                AgentControlKind::List => Some("builtin.list_agents@1"),
+                AgentControlKind::Interrupt => Some("builtin.interrupt_agent@1"),
+                AgentControlKind::Close => Some("builtin.close_agent@1"),
             },
             ..Default::default()
         };
@@ -154,6 +156,10 @@ pub(crate) fn register<S: AgentToolSink>(
             &definition,
             AgentToolOptions {
                 deferred: matches!(kind, QueryKind::Models | QueryKind::Model),
+                presentation: match kind {
+                    QueryKind::Report => Some("builtin.wait_agent@1"),
+                    _ => None,
+                },
                 ..Default::default()
             },
         )?;

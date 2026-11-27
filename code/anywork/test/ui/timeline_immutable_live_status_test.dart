@@ -4,7 +4,9 @@ import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/live_status/live_status_bar.dart';
+import 'package:anywork/src/features/conversation/timeline/tools/tool_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
+import 'package:anywork/src/features/conversation/timeline/work_group/work_group_member_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -100,14 +102,16 @@ void main() {
 
       status(
         LiveStatusWorking(
-          items: const [
-            LiveWorkItem(
+          items: [
+            WorkGroupToolCall(
               id: 'work:2',
+              seq: 2,
               callId: 'call-2',
-              kind: 'read',
               toolName: 'read_file',
               status: 'running',
               summary: 'Reading a.txt',
+              payloadJson: '{}',
+              bodies: const [],
             ),
           ],
         ),
@@ -120,14 +124,31 @@ void main() {
         () => liveWork.evaluate().isNotEmpty,
         'working status',
       );
-      expect(liveText('Read · Reading a.txt'), findsNothing);
+      final liveMember = find.descendant(
+        of: find.byType(LiveStatusBar),
+        matching: find.byType(WorkGroupMemberView),
+      );
+      expect(liveMember, findsNothing);
       await tester.tap(liveWork);
       await pumpClientUntil(
         tester,
-        () => liveText('Read · Reading a.txt').evaluate().isNotEmpty,
+        () => liveMember.evaluate().isNotEmpty,
         'working status',
       );
-      expect(find.byType(ListTile), findsNothing);
+      expect(
+        find.descendant(
+          of: liveMember,
+          matching: find.byType(TimelineToolItemView),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('live-work-header:thread-main')),
+          matching: find.byType(ListTile),
+        ),
+        findsNothing,
+      );
       expect(lease.controller.messages.single, same(input));
       expect(feed.memberRequests, isEmpty);
 

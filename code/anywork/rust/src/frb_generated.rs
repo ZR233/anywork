@@ -14797,7 +14797,7 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeLiveStatusPhas
             }
             1 => {
                 let mut var_items = <Vec<
-                    crate::api::studio::types::presentation::BridgeLiveWorkItem,
+                    crate::api::studio::types::presentation::BridgeWorkGroupMember,
                 >>::sse_decode(deserializer);
                 let mut var_reasoningPreview = <Option<String>>::sse_decode(deserializer);
                 let mut var_startedAtMs = <Option<i64>>::sse_decode(deserializer);
@@ -14858,30 +14858,6 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeLiveStatusSnap
             phase: var_phase,
             attentions: var_attentions,
             suppressed_by_interaction: var_suppressedByInteraction,
-        };
-    }
-}
-
-impl SseDecode for crate::api::studio::types::presentation::BridgeLiveWorkItem {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_id = <String>::sse_decode(deserializer);
-        let mut var_callId = <Option<String>>::sse_decode(deserializer);
-        let mut var_kind = <String>::sse_decode(deserializer);
-        let mut var_toolName = <String>::sse_decode(deserializer);
-        let mut var_status = <String>::sse_decode(deserializer);
-        let mut var_summary = <String>::sse_decode(deserializer);
-        let mut var_startedAtMs = <Option<i64>>::sse_decode(deserializer);
-        let mut var_finishedAtMs = <Option<i64>>::sse_decode(deserializer);
-        return crate::api::studio::types::presentation::BridgeLiveWorkItem {
-            id: var_id,
-            call_id: var_callId,
-            kind: var_kind,
-            tool_name: var_toolName,
-            status: var_status,
-            summary: var_summary,
-            started_at_ms: var_startedAtMs,
-            finished_at_ms: var_finishedAtMs,
         };
     }
 }
@@ -22884,22 +22860,6 @@ impl SseDecode for Vec<crate::api::studio::types::presentation::BridgeLiveAttent
         for idx_ in 0..len_ {
             ans_.push(
                 <crate::api::studio::types::presentation::BridgeLiveAttention>::sse_decode(
-                    deserializer,
-                ),
-            );
-        }
-        return ans_;
-    }
-}
-
-impl SseDecode for Vec<crate::api::studio::types::presentation::BridgeLiveWorkItem> {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut len_ = <i32>::sse_decode(deserializer);
-        let mut ans_ = Vec::with_capacity(len_ as usize);
-        for idx_ in 0..len_ {
-            ans_.push(
-                <crate::api::studio::types::presentation::BridgeLiveWorkItem>::sse_decode(
                     deserializer,
                 ),
             );
@@ -35133,33 +35093,6 @@ impl
     > for crate::api::studio::types::presentation::BridgeLiveStatusSnapshot
 {
     fn into_into_dart(self) -> crate::api::studio::types::presentation::BridgeLiveStatusSnapshot {
-        self
-    }
-}
-// Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for crate::api::studio::types::presentation::BridgeLiveWorkItem {
-    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        [
-            self.id.into_into_dart().into_dart(),
-            self.call_id.into_into_dart().into_dart(),
-            self.kind.into_into_dart().into_dart(),
-            self.tool_name.into_into_dart().into_dart(),
-            self.status.into_into_dart().into_dart(),
-            self.summary.into_into_dart().into_dart(),
-            self.started_at_ms.into_into_dart().into_dart(),
-            self.finished_at_ms.into_into_dart().into_dart(),
-        ]
-        .into_dart()
-    }
-}
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::api::studio::types::presentation::BridgeLiveWorkItem
-{
-}
-impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::presentation::BridgeLiveWorkItem>
-    for crate::api::studio::types::presentation::BridgeLiveWorkItem
-{
-    fn into_into_dart(self) -> crate::api::studio::types::presentation::BridgeLiveWorkItem {
         self
     }
 }
@@ -50074,7 +50007,7 @@ impl SseEncode for crate::api::studio::types::presentation::BridgeLiveStatusPhas
                 started_at_ms,
             } => {
                 <i32>::sse_encode(1, serializer);
-                <Vec<crate::api::studio::types::presentation::BridgeLiveWorkItem>>::sse_encode(
+                <Vec<crate::api::studio::types::presentation::BridgeWorkGroupMember>>::sse_encode(
                     items, serializer,
                 );
                 <Option<String>>::sse_encode(reasoning_preview, serializer);
@@ -50139,20 +50072,6 @@ impl SseEncode for crate::api::studio::types::presentation::BridgeLiveStatusSnap
             serializer,
         );
         <bool>::sse_encode(self.suppressed_by_interaction, serializer);
-    }
-}
-
-impl SseEncode for crate::api::studio::types::presentation::BridgeLiveWorkItem {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <String>::sse_encode(self.id, serializer);
-        <Option<String>>::sse_encode(self.call_id, serializer);
-        <String>::sse_encode(self.kind, serializer);
-        <String>::sse_encode(self.tool_name, serializer);
-        <String>::sse_encode(self.status, serializer);
-        <String>::sse_encode(self.summary, serializer);
-        <Option<i64>>::sse_encode(self.started_at_ms, serializer);
-        <Option<i64>>::sse_encode(self.finished_at_ms, serializer);
     }
 }
 
@@ -56376,18 +56295,6 @@ impl SseEncode for Vec<crate::api::studio::types::presentation::BridgeLiveAttent
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <crate::api::studio::types::presentation::BridgeLiveAttention>::sse_encode(
-                item, serializer,
-            );
-        }
-    }
-}
-
-impl SseEncode for Vec<crate::api::studio::types::presentation::BridgeLiveWorkItem> {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <i32>::sse_encode(self.len() as _, serializer);
-        for item in self {
-            <crate::api::studio::types::presentation::BridgeLiveWorkItem>::sse_encode(
                 item, serializer,
             );
         }

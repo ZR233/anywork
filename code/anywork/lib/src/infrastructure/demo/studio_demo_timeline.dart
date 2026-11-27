@@ -364,13 +364,17 @@ final class _DemoConversationFeedResource implements ClientResource {
             items: [
               for (final item in pending)
                 if (item.content.invocation case final invocation?)
-                  LiveWorkItem(
+                  WorkGroupToolCall(
                     id: item.id,
+                    seq: 0,
                     callId: invocation.toolCallId,
-                    kind: 'tool',
+                    turnId: item.turnId,
                     toolName: invocation.name,
+                    presentationContract: invocation.presentationContract,
                     status: 'running',
                     summary: activity?.summary ?? invocation.name,
+                    payloadJson: _history._toolPayload(item),
+                    bodies: _history._toolBodies(item),
                     startedAtMs: item.updatedAt.millisecondsSinceEpoch,
                   ),
             ],

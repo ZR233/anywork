@@ -6,6 +6,7 @@ import 'package:anywork_previews/src/features/conversation/timeline/previews/tim
 import 'package:anywork_previews/src/features/conversation/timeline/previews/conversation_live_status_previews.dart';
 import 'package:anywork_previews/src/features/conversation/timeline/previews/plan_detail_previews.dart';
 import 'package:anywork_previews/src/features/conversation/timeline/previews/timeline_preview_fixtures.dart';
+import 'package:anywork_previews/src/features/conversation/timeline/previews/tool_detail_previews.dart';
 import 'package:anywork/src/features/conversation/interactions/views/plan_confirmation_view.dart';
 import 'package:anywork/src/features/conversation/timeline/views/plan_detail_view.dart';
 import 'package:anywork/src/features/conversation/timeline/views/plan_document_theme.dart';
@@ -16,6 +17,8 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_mark
 import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_children_view.dart';
+import 'package:anywork/src/features/conversation/timeline/work_group/work_group_member_view.dart';
+import 'package:anywork/src/shared/studio_badges.dart';
 import 'package:anywork/src/shared/latest_scroll.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
@@ -704,4 +707,96 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('工作组成员重构预览覆盖折叠摘要、混合矩阵、成员展开详情、对照与 360px 大字号无溢出', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    tester.view.physicalSize = const Size(760, 260);
+    await tester.pumpWidget(
+      conversationLiveStatusReasoningHeaderCollapsedPreview(),
+    );
+    await tester.pump();
+    expect(
+      find.text('Designing ToolResult views', findRichText: true),
+      findsOneWidget,
+    );
+    expect(find.textContaining('****', findRichText: true), findsNothing);
+    expect(
+      find.text('Phase A Designing WorkGroupMemberView', findRichText: true),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+
+    tester.view.physicalSize = const Size(820, 1080);
+    await tester.pumpWidget(conversationLiveStatusMixedMatrixPreview());
+    await tester.pump();
+    expect(find.byType(WorkGroupMemberView), findsNWidgets(12));
+    expect(find.textContaining('思考 ·'), findsNothing);
+    expect(
+      find.text('正在运行 cargo flutter test --no-pub test/ui'),
+      findsOneWidget,
+    );
+    expect(
+      find.text('已运行 cargo test -p pl-studio-runtime timeline::'),
+      findsOneWidget,
+    );
+    expect(find.text('运行失败 cargo flutter analyze'), findsOneWidget);
+    expect(find.byIcon(Icons.terminal), findsNWidgets(2));
+    expect(find.byIcon(Icons.error_outline), findsOneWidget);
+    expect(find.textContaining('退出码 101'), findsOneWidget);
+    expect(
+      find.text('后台运行 cargo xtask preview-gui --headless'),
+      findsOneWidget,
+    );
+    expect(find.byType(StudioCompactChip), findsOneWidget);
+    expect(find.text('reviewer'), findsOneWidget);
+    expect(find.textContaining('thread-66137'), findsNothing);
+    expect(tester.takeException(), isNull);
+
+    tester.view.physicalSize = const Size(820, 1060);
+    await tester.pumpWidget(
+      conversationLiveStatusMemberDetailsExpandedPreview(),
+    );
+    await tester.pump();
+    expect(find.textContaining('[stderr] error:'), findsOneWidget);
+    expect(
+      find.textContaining('WorkGroupMemberRegistry 匹配分派表', findRichText: true),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+
+    tester.view.physicalSize = const Size(820, 820);
+    await tester.pumpWidget(conversationLiveVsHistoryWorkGroupPreview());
+    await tester.pump();
+    expect(find.byType(CompletionRunView), findsOneWidget);
+    expect(find.text('工作了 38 秒'), findsOneWidget);
+    expect(find.byType(WorkGroupMemberView), findsNWidgets(9));
+    expect(tester.takeException(), isNull);
+
+    tester.view.physicalSize = const Size(360, 1020);
+    await tester.pumpWidget(
+      conversationLiveStatusWorkGroupNarrowScaledPreview(),
+    );
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+
+    tester.view.physicalSize = const Size(960, 640);
+    for (final preview in [
+      failedExecToolDetailPreview,
+      backgroundExecToolDetailPreview,
+      readAgentSessionToolDetailPreview,
+    ]) {
+      await tester.pumpWidget(preview());
+      await tester.pump();
+      final row = tester.widget<TimelineActivityRow>(
+        find.byType(TimelineActivityRow),
+      );
+      expect(row.label, isNot(contains('thread-66137')));
+      expect(tester.takeException(), isNull);
+    }
+  });
 }

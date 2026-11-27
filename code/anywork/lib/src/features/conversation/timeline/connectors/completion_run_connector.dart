@@ -6,10 +6,9 @@ import 'package:material_ui/material_ui.dart';
 import '../../../../presentation/view_models/timeline_session_owner.dart';
 import '../state/timeline_display_diagnostics.dart';
 import '../state/timeline_display_unit.dart';
-import '../state/timeline_feed_projection.dart';
 import '../state/timeline_image_resources.dart';
-import '../widgets/chat_item_view.dart';
 import '../widgets/timeline_content_range_view.dart';
+import '../work_group/work_group_member_view.dart';
 import 'timeline_media_connector.dart';
 
 /// The expanded row lends its producer-defined range to the original feed.
@@ -120,11 +119,11 @@ class _MembersState extends State<CompletionRunConnector>
   );
 
   Widget _member(WorkGroupMember member) {
-    final item = timelineFeedMember(member);
     final read = widget.readAttachment;
-    return ChatItemView(
+    return WorkGroupMemberView(
       key: ValueKey(member.id),
-      item: item,
+      member: member,
+      isLive: false,
       bodyBuilder: widget.bodyBuilder,
       isDisplayActive: () => isCurrent,
       monotonicMicros: widget.monotonicMicros,

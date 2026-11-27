@@ -1559,7 +1559,7 @@ async fn live_status_coalesces_reasoning_deltas_and_preserves_tool_progress_summ
     ));
     assert!(layer.flush_coalesced().is_none());
 
-    // Richer ToolProgress summary is preserved across ToolCompleted.
+    // ToolProgress updates result_preview only and never overwrites arguments/tool_name across ToolCompleted.
     let _ = layer.on_live_event(&CoreLiveEvent::ToolProgress {
         task_id: "task-x".into(),
         call_id: "call-x".into(),
@@ -1583,10 +1583,17 @@ async fn live_status_coalesces_reasoning_deltas_and_preserves_tool_progress_summ
     match snap.phase {
         LiveStatusPhase::Working { items, .. } => {
             assert_eq!(items.len(), 2);
-            assert_eq!(items[0].kind, "thinking");
-            assert_eq!(items[1].kind, "command");
-            assert_eq!(items[1].status, "completed");
-            assert_eq!(items[1].summary, "running cargo test");
+            assert!(matches!(&items[0], WorkGroupMember::Reasoning { .. }));
+            assert!(matches!(
+                &items[1],
+                WorkGroupMember::ToolCall {
+                    tool_name,
+                    status,
+                    arguments: Some(args),
+                    result_preview: Some(res),
+                    ..
+                } if tool_name == "shell" && status == "succeeded" && args.contains("cargo test") && res == "ok"
+            ));
         }
         other => panic!("expected Working phase, got {other:?}"),
     }
@@ -1646,9 +1653,15 @@ async fn live_status_state_machine_stopping_summary_boundary_and_stray_guard() -
     match snap.phase {
         LiveStatusPhase::Working { items, .. } => {
             assert_eq!(items.len(), 1);
-            assert_eq!(items[0].kind, "read");
-            assert_eq!(items[0].status, "completed");
-            assert!(items[0].finished_at_ms.is_some());
+            assert!(matches!(
+                &items[0],
+                WorkGroupMember::ToolCall {
+                    tool_name,
+                    status,
+                    finished_at_ms: Some(_),
+                    ..
+                } if tool_name == "read_file" && status == "succeeded"
+            ));
         }
         other => panic!("expected Working, got {other:?}"),
     }
@@ -2329,4 +2342,427 @@ fn live_status_resets_streaming_text_to_working_on_step_preempted() {
         .on_history_record(&record)
         .expect("TurnEnded should transition Stopping -> Idle");
     assert!(matches!(idle.phase, LiveStatusPhase::Idle));
+}
+
+#[test]
+fn live_status_reasoning_deltas_across_attempts_and_items_stay_isolated() {
+    let layer = LiveStatusDataLayer::new();
+
+    let first = layer
+        .on_live_event(&CoreLiveEvent::ReasoningDelta {
+            attempt_id: "att-1".into(),
+            item_id: "rs-1".into(),
+            generation: 0,
+            text: "**First thought**".into(),
+            replace: false,
+            is_summary: true,
+        })
+        .unwrap();
+    assert!(matches!(
+        &first.phase,
+        LiveStatusPhase::Working {
+            reasoning_preview: Some(p),
+            items,
+            ..
+        } if p == "**First thought**" && items.len() == 1
+    ));
+
+    assert!(
+        layer
+            .on_live_event(&CoreLiveEvent::ReasoningDelta {
+                attempt_id: "att-2".into(),
+                item_id: "rs-1".into(),
+                generation: 0,
+                text: "**Second thought**".into(),
+                replace: false,
+                is_summary: true,
+            })
+            .is_none()
+    );
+    let flushed = layer.flush_coalesced().unwrap();
+    match flushed.phase {
+        LiveStatusPhase::Working {
+            items,
+            reasoning_preview,
+            ..
+        } => {
+            assert_eq!(reasoning_preview.as_deref(), Some("**Second thought**"));
+            assert_eq!(items.len(), 2);
+            assert!(matches!(
+                &items[0],
+                WorkGroupMember::Reasoning { summary, .. } if summary == "**First thought**"
+            ));
+            assert!(matches!(
+                &items[1],
+                WorkGroupMember::Reasoning { summary, .. } if summary == "**Second thought**"
+            ));
+        }
+        other => panic!("expected Working, got {other:?}"),
+    }
+}
+
+#[test]
+fn latest_reasoning_summary_preview_extracts_latest_bold_segment_and_truncates_right() {
+    use super::latest_reasoning_summary_preview;
+
+    assert_eq!(
+        latest_reasoning_summary_preview("**A****B****C**").as_deref(),
+        Some("**C**")
+    );
+    assert_eq!(
+        latest_reasoning_summary_preview("...**A** body **B**").as_deref(),
+        Some("**B**")
+    );
+    assert_eq!(
+        latest_reasoning_summary_preview("**A****B").as_deref(),
+        Some("**B")
+    );
+    assert_eq!(
+        latest_reasoning_summary_preview("**First**\n\n**Second** detail").as_deref(),
+        Some("**Second** detail")
+    );
+
+    let long = format!("**{}", "x".repeat(300));
+    let preview = latest_reasoning_summary_preview(&long).unwrap();
+    assert!(preview.chars().count() <= 240);
+    assert!(preview.starts_with("**"));
+    assert!(preview.ends_with("…**"));
+    assert_eq!(preview.matches("**").count() % 2, 0);
+}
+
+#[test]
+fn live_status_reasoning_completed_matches_fifo_and_refreshes_preview() -> Result<()> {
+    let layer = LiveStatusDataLayer::new();
+
+    let _ = layer.on_live_event(&CoreLiveEvent::ReasoningDelta {
+        attempt_id: "att-1".into(),
+        item_id: "r-1".into(),
+        generation: 0,
+        text: "**First streaming**".into(),
+        replace: false,
+        is_summary: true,
+    });
+    let _ = layer.on_live_event(&CoreLiveEvent::ReasoningDelta {
+        attempt_id: "att-1".into(),
+        item_id: "r-2".into(),
+        generation: 0,
+        text: "**Second streaming**".into(),
+        replace: false,
+        is_summary: true,
+    });
+
+    let mut done_1 = make_text_event(
+        "ev-r1",
+        HistoryEventKind::ReasoningCompleted,
+        HistoryTimelineRole::Work,
+        HistoryEntityKind::Reasoning,
+        None,
+        "First full reasoning",
+        "turn-1",
+        "db-1",
+    )?;
+    done_1.seq = 10;
+    let snap_1 = layer.on_history_record(&done_1.to_record()).unwrap();
+    match snap_1.phase {
+        LiveStatusPhase::Working {
+            items,
+            reasoning_preview,
+            ..
+        } => {
+            assert_eq!(items.len(), 2);
+            // FIFO: first item settled first, second remains running and drives preview.
+            assert!(matches!(
+                &items[0],
+                WorkGroupMember::Reasoning { id, outcome, .. } if id == "ev-r1" && outcome == "completed"
+            ));
+            assert!(matches!(
+                &items[1],
+                WorkGroupMember::Reasoning { outcome, summary, .. } if outcome == "running" && summary == "**Second streaming**"
+            ));
+            assert_eq!(reasoning_preview.as_deref(), Some("**Second streaming**"));
+        }
+        other => panic!("expected Working, got {other:?}"),
+    }
+
+    let mut done_2 = make_text_event(
+        "ev-r2",
+        HistoryEventKind::ReasoningCompleted,
+        HistoryTimelineRole::Work,
+        HistoryEntityKind::Reasoning,
+        None,
+        "Second completed summary",
+        "turn-1",
+        "db-1",
+    )?;
+    done_2.seq = 11;
+    let snap_2 = layer.on_history_record(&done_2.to_record()).unwrap();
+    match snap_2.phase {
+        LiveStatusPhase::Working {
+            items,
+            reasoning_preview,
+            ..
+        } => {
+            assert_eq!(items.len(), 2);
+            assert!(matches!(
+                &items[1],
+                WorkGroupMember::Reasoning { id, outcome, .. } if id == "ev-r2" && outcome == "completed"
+            ));
+            assert_eq!(
+                reasoning_preview.as_deref(),
+                Some("Second completed summary")
+            );
+        }
+        other => panic!("expected Working, got {other:?}"),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn live_status_tool_progress_preserves_arguments_across_failed_completion() -> Result<()> {
+    let layer = LiveStatusDataLayer::new();
+    let _ = layer.on_live_event(&CoreLiveEvent::RunActivity {
+        execution: Some(pl_core::thread::ActiveExecution {
+            id: "exec-1".into(),
+            phase: pl_core::thread::ExecutionPhase::Preparing,
+            turn_id: Some("turn-1".into()),
+        }),
+    });
+
+    let mut called = make_tool_event(
+        "ev-called",
+        "call-sed",
+        "exec",
+        HistoryEventKind::ToolCalled,
+        r#"{"command":"sed -n '1,10p' missing.txt"}"#,
+        None,
+        "turn-1",
+        "db-1",
+    )?;
+    called.seq = 5;
+    let _ = layer.on_history_record(&called.to_record()).unwrap();
+
+    let snap_progress = layer
+        .on_live_event(&CoreLiveEvent::ToolProgress {
+            task_id: "task-sed".into(),
+            call_id: "call-sed".into(),
+            tool_id: "exec".into(),
+            progress: pl_core::model::ToolProgress::default().applied(
+                &pl_core::model::ToolProgressUpdate::replace(
+                    "stderr",
+                    "[stderr] sed: missing.txt: No such file or directory",
+                ),
+            ),
+        })
+        .unwrap();
+    match snap_progress.phase {
+        LiveStatusPhase::Working { items, .. } => {
+            assert!(matches!(
+                &items[0],
+                WorkGroupMember::ToolCall {
+                    tool_name,
+                    arguments: Some(args),
+                    result_preview: Some(res),
+                    ..
+                } if tool_name == "exec"
+                    && args == r#"{"command":"sed -n '1,10p' missing.txt"}"#
+                    && res.contains("[stderr] sed: missing.txt")
+            ));
+        }
+        other => panic!("expected Working, got {other:?}"),
+    }
+
+    let mut failed = make_tool_event(
+        "ev-failed",
+        "call-sed",
+        "exec",
+        HistoryEventKind::ToolCompleted,
+        "",
+        Some("exit code 1"),
+        "turn-1",
+        "db-1",
+    )?;
+    let mut env: EventPayloadEnvelope = serde_json::from_str(&failed.payload_json)?;
+    env.bodies.retain(|b| b.key != "tool.arguments");
+    env.meta.state = HistoryEntityState::KnownTerminal {
+        outcome: ChatTerminalOutcome::Failed,
+    };
+    env.data["state"] = serde_json::json!({ "kind": "failed" });
+    failed.payload_json = serde_json::to_string(&env)?;
+    failed.seq = 6;
+
+    let snap_failed = layer.on_history_record(&failed.to_record()).unwrap();
+    match snap_failed.phase {
+        LiveStatusPhase::Working { items, .. } => {
+            assert!(matches!(
+                &items[0],
+                WorkGroupMember::ToolCall {
+                    status,
+                    arguments: Some(args),
+                    result_preview: Some(res),
+                    ..
+                } if status == "failed"
+                    && args == r#"{"command":"sed -n '1,10p' missing.txt"}"#
+                    && res == "exit code 1"
+            ));
+        }
+        other => panic!("expected Working, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn live_status_preserves_structured_agent_file_change_and_skill_members() -> Result<()> {
+    let layer = LiveStatusDataLayer::new();
+    let _ = layer.on_live_event(&CoreLiveEvent::RunActivity {
+        execution: Some(pl_core::thread::ActiveExecution {
+            id: "exec-1".into(),
+            phase: pl_core::thread::ExecutionPhase::Preparing,
+            turn_id: Some("turn-1".into()),
+        }),
+    });
+
+    let make_work_record = |event_id: &str,
+                            seq: u64,
+                            kind: HistoryEventKind,
+                            entity_id: &str,
+                            entity_kind: HistoryEntityKind,
+                            item_type: &str,
+                            state: HistoryEntityState,
+                            data: serde_json::Value|
+     -> Result<crate::protocol::history::HistoryEventRecord> {
+        let mut ev = HistoryEvent::new(event_id, kind, HistoryTimelineRole::Work, 2_000);
+        ev.seq = seq;
+        ev.occurred_at = Some(2_000);
+        ev.entity_id = Some(entity_id.into());
+        let envelope = EventPayloadEnvelope {
+            contract: "anywork.event/1".into(),
+            item_type: item_type.into(),
+            meta: HistoryEventMeta {
+                entity_id: entity_id.into(),
+                entity_kind,
+                delivery: ChatDeliveryKind::Foreground,
+                state,
+                started_at: Some(2_000),
+                finished_at: None,
+                text_channel: None,
+                model_recovery: None,
+                single_visibility: None,
+                presentation_contract: None,
+                source_order: Some(1),
+                content_present: Some(true),
+                wait: None,
+                tool: None,
+            },
+            data,
+            bodies: Vec::new(),
+            source_order: Some(1),
+            turn_id: Some("turn-1".into()),
+            captured_at: Some(2_000),
+        };
+        ev.payload_schema = "anywork.event/1".into();
+        ev.payload_json = serde_json::to_string(&envelope)?;
+        Ok(ev.to_record())
+    };
+
+    let spawned = make_work_record(
+        "ev-ag-1",
+        1,
+        HistoryEventKind::AgentSpawned,
+        "agent-1",
+        HistoryEntityKind::Agent,
+        "agent",
+        HistoryEntityState::KnownActive {
+            status: crate::ChatActiveStatus::Running,
+        },
+        serde_json::json!({
+            "identity": {
+                "id": "thread-child-1",
+                "role": "rust-backend",
+                "taskSummary": "Implement Phase A"
+            },
+            "outcome": { "kind": "running" }
+        }),
+    )?;
+    let _ = layer.on_history_record(&spawned).unwrap();
+
+    let completed = make_work_record(
+        "ev-ag-2",
+        2,
+        HistoryEventKind::AgentCompleted,
+        "agent-1",
+        HistoryEntityKind::Agent,
+        "agent",
+        HistoryEntityState::KnownTerminal {
+            outcome: ChatTerminalOutcome::Completed,
+        },
+        serde_json::json!({
+            "identity": {
+                "id": "thread-child-1",
+                "role": "rust-backend",
+                "taskSummary": "Implement Phase A"
+            },
+            "outcome": { "kind": "succeeded", "data": { "completedAt": 2500, "summary": "Done" } }
+        }),
+    )?;
+    let _ = layer.on_history_record(&completed).unwrap();
+
+    let file_ev = make_work_record(
+        "ev-file-1",
+        3,
+        HistoryEventKind::ItemRecorded,
+        "file-1",
+        HistoryEntityKind::FileChange,
+        "file",
+        HistoryEntityState::KnownTerminal {
+            outcome: ChatTerminalOutcome::Completed,
+        },
+        serde_json::json!({ "path": "src/main.rs" }),
+    )?;
+    let _ = layer.on_history_record(&file_ev).unwrap();
+
+    let skill_ev = make_work_record(
+        "ev-skill-1",
+        4,
+        HistoryEventKind::ItemRecorded,
+        "skill-1",
+        HistoryEntityKind::Skill,
+        "skill",
+        HistoryEntityState::KnownTerminal {
+            outcome: ChatTerminalOutcome::Completed,
+        },
+        serde_json::json!({ "activation": { "name": "rust-code-quality" } }),
+    )?;
+    let snap = layer.on_history_record(&skill_ev).unwrap();
+
+    match snap.phase {
+        LiveStatusPhase::Working { items, .. } => {
+            assert_eq!(items.len(), 3);
+            assert!(matches!(
+                &items[0],
+                WorkGroupMember::Agent {
+                    agent_id,
+                    name,
+                    status,
+                    summary,
+                    payload_json,
+                    ..
+                } if agent_id == "thread-child-1"
+                    && name == "rust-backend"
+                    && status == "completed"
+                    && summary == "Implement Phase A"
+                    && payload_json.contains("Implement Phase A")
+            ));
+            assert!(matches!(
+                &items[1],
+                WorkGroupMember::FileChange { summary, .. } if summary == "src/main.rs"
+            ));
+            assert!(matches!(
+                &items[2],
+                WorkGroupMember::Skill { name, .. } if name == "rust-code-quality"
+            ));
+        }
+        other => panic!("expected Working, got {other:?}"),
+    }
+    Ok(())
 }

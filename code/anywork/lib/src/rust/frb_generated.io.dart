@@ -2551,9 +2551,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeLiveStatusSnapshot dco_decode_bridge_live_status_snapshot(dynamic raw);
 
   @protected
-  BridgeLiveWorkItem dco_decode_bridge_live_work_item(dynamic raw);
-
-  @protected
   BridgeLoadingResource dco_decode_bridge_loading_resource(dynamic raw);
 
   @protected
@@ -3889,9 +3886,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<BridgeLiveAttention> dco_decode_list_bridge_live_attention(dynamic raw);
-
-  @protected
-  List<BridgeLiveWorkItem> dco_decode_list_bridge_live_work_item(dynamic raw);
 
   @protected
   List<BridgeLspServerDto> dco_decode_list_bridge_lsp_server_dto(dynamic raw);
@@ -7842,11 +7836,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeLiveWorkItem sse_decode_bridge_live_work_item(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   BridgeLoadingResource sse_decode_bridge_loading_resource(
     SseDeserializer deserializer,
   );
@@ -9478,11 +9467,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<BridgeLiveAttention> sse_decode_list_bridge_live_attention(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  List<BridgeLiveWorkItem> sse_decode_list_bridge_live_work_item(
     SseDeserializer deserializer,
   );
 
@@ -14165,12 +14149,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_bridge_live_work_item(
-    BridgeLiveWorkItem self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_bridge_loading_resource(
     BridgeLoadingResource self,
     SseSerializer serializer,
@@ -16144,12 +16122,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_bridge_live_attention(
     List<BridgeLiveAttention> self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_list_bridge_live_work_item(
-    List<BridgeLiveWorkItem> self,
     SseSerializer serializer,
   );
 

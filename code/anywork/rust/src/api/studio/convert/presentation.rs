@@ -510,19 +510,6 @@ pub(crate) fn timeline_patch(value: protocol::TimelinePatch) -> Result<BridgeTim
     })
 }
 
-fn live_work_item(value: protocol::LiveWorkItem) -> BridgeLiveWorkItem {
-    BridgeLiveWorkItem {
-        id: value.id,
-        call_id: value.call_id,
-        kind: value.kind,
-        tool_name: value.tool_name,
-        status: value.status,
-        summary: value.summary,
-        started_at_ms: value.started_at_ms,
-        finished_at_ms: value.finished_at_ms,
-    }
-}
-
 fn live_attention(value: protocol::LiveAttention) -> BridgeLiveAttention {
     BridgeLiveAttention {
         id: value.id,
@@ -540,7 +527,7 @@ fn live_status_phase(value: protocol::LiveStatusPhase) -> BridgeLiveStatusPhase 
             reasoning_preview,
             started_at_ms,
         } => BridgeLiveStatusPhase::Working {
-            items: items.into_iter().map(live_work_item).collect(),
+            items: items.into_iter().map(work_group_member).collect(),
             reasoning_preview,
             started_at_ms,
         },

@@ -94,8 +94,8 @@ pub use studio::{
 };
 pub use timeline::{
     BodyRef, BodyWindow, ConversationEvent, ConversationFeed, LiveAttention, LiveStatusPhase,
-    LiveStatusSnapshot, LiveWorkItem, SessionDetailKind, SessionDetailWindow, SessionMetaSnapshot,
-    TimelineItem, TimelinePatch, WorkGroupMember, WorkGroupStatus,
+    LiveStatusSnapshot, SessionDetailKind, SessionDetailWindow, SessionMetaSnapshot, TimelineItem,
+    TimelinePatch, WorkGroupMember, WorkGroupStatus,
 };
 pub use worker_assets::RemoteHelperSource;
 

@@ -1,10 +1,14 @@
 import 'dart:async';
 
+import 'package:anywork_client/models.dart' show WorkGroupToolCall;
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../connectors/interaction_details_connector.dart';
+import '../state/chat_item_presentation.dart';
+import '../tools/tool_item_adapter.dart';
+import '../tools/tool_item_registry.dart';
 import '../widgets/conversation_activity_bar.dart';
 import '../widgets/conversation_activity_viewport.dart';
 import '../widgets/conversation_current_views.dart';
@@ -14,6 +18,8 @@ import '../widgets/timeline_activity_section.dart';
 import '../widgets/timeline_markdown.dart';
 import '../widgets/timeline_reasoning_view.dart';
 import '../widgets/timeline_work_group_shell.dart';
+import '../work_group/items/tool_member_item.dart';
+import '../work_group/work_group_member_view.dart';
 import 'live_status_state.dart';
 
 /// 实时状态栏唯一纯 UI 表面：直接消费扁平单状态 [LiveStatusState]。
@@ -26,6 +32,8 @@ class LiveStatusSurfaceView extends StatelessWidget {
     this.viewportKey,
     this.liveWorkInitiallyExpanded = false,
     this.now,
+    this.bodyBuilder,
+    this.attachmentBuilder,
     super.key,
   });
 
@@ -33,6 +41,8 @@ class LiveStatusSurfaceView extends StatelessWidget {
   final Key? viewportKey;
   final bool liveWorkInitiallyExpanded;
   final DateTime Function()? now;
+  final Widget Function(String id, String text)? bodyBuilder;
+  final Widget Function(ChatItemPresentation item)? attachmentBuilder;
 
   @override
   Widget build(BuildContext context) => switch (state) {
@@ -57,6 +67,8 @@ class LiveStatusSurfaceView extends StatelessWidget {
             working: working,
             initiallyExpanded: liveWorkInitiallyExpanded,
             now: now,
+            bodyBuilder: bodyBuilder,
+            attachmentBuilder: attachmentBuilder,
           ),
         ],
       ),
@@ -141,12 +153,24 @@ class _WorkingCard extends StatelessWidget {
     required this.working,
     required this.initiallyExpanded,
     required this.now,
+    required this.bodyBuilder,
+    required this.attachmentBuilder,
     super.key,
   });
 
   final LiveStatusWorkingState working;
   final bool initiallyExpanded;
   final DateTime Function()? now;
+  final Widget Function(String id, String text)? bodyBuilder;
+  final Widget Function(ChatItemPresentation item)? attachmentBuilder;
+
+  static Widget _defaultBodyBuilder(String id, String text) => TimelineMarkdown(
+    id: id,
+    text: text,
+    onLink: (_) {},
+    isSafeLink: (_) => false,
+    imageBuilder: (_, url) => Text(url),
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -156,6 +180,7 @@ class _WorkingCard extends StatelessWidget {
       );
     }
 
+    final effectiveBodyBuilder = bodyBuilder ?? _defaultBodyBuilder;
     return TimelineWorkGroupShell(
       scrollBody: true,
       railInset: 15.5,
@@ -168,12 +193,17 @@ class _WorkingCard extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          for (final member in working.items)
-            _LiveWorkMemberRow(
-              key: ValueKey(member.id),
-              member: member,
+          for (var i = 0; i < working.items.length; i++) ...[
+            if (i > 0) const SizedBox(height: 2),
+            WorkGroupMemberView(
+              key: ValueKey(working.items[i].id),
+              member: working.items[i],
+              isLive: true,
               now: now,
+              bodyBuilder: effectiveBodyBuilder,
+              attachmentBuilder: attachmentBuilder,
             ),
+          ],
         ],
       ),
     );
@@ -202,24 +232,32 @@ class _WorkingCard extends StatelessWidget {
         final fallbackTitle = expandable
             ? context.l10n.timelineActivityTitle
             : context.l10n.timelineReasoningActive;
-        final label = hasSummary ? preview : fallbackTitle;
         final titleStyle = context.text.bodySmall!.copyWith(
           color: context.colors.onSurface,
           fontSize: TimelineActivityRow.headerFontSize,
           fontWeight: FontWeight.w500,
           height: 1.36,
         );
-        final labelWidget = hasSummary && timelineNeedsSafeMarkdown(preview)
-            ? TimelineReasoningSummary(
-                key: ValueKey('live-work-summary:${working.threadId}'),
-                id: 'live-work-summary',
-                text: preview,
-                style: titleStyle,
-                strutStyle: TimelineActivityRow.headerStrutStyle,
-                inlineCodeBackgroundColor: context.colors.surfaceContainerHigh
-                    .withValues(alpha: .75),
-              )
-            : null;
+
+        final String label;
+        final Widget? labelWidget;
+        if (hasSummary) {
+          final plain = timelineMarkdownPlainText(preview);
+          label = plain.isEmpty ? fallbackTitle : plain;
+          labelWidget = TimelineReasoningSummary(
+            key: ValueKey('live-work-summary:${working.threadId}'),
+            id: 'live-work-summary',
+            text: preview,
+            style: titleStyle,
+            strutStyle: TimelineActivityRow.headerStrutStyle,
+            inlineCodeBackgroundColor: context.colors.surfaceContainerHigh
+                .withValues(alpha: .75),
+          );
+        } else {
+          label = _activeToolHeadline(context) ?? fallbackTitle;
+          labelWidget = null;
+        }
+
         final indicator = working.hasRunningCommand && !hasSummary
             ? TimelineActivityIndicatorStyle.circularProgress
             : TimelineActivityIndicatorStyle.restingCat;
@@ -243,103 +281,30 @@ class _WorkingCard extends StatelessWidget {
       },
     );
   }
-}
 
-class _LiveWorkMemberRow extends StatelessWidget {
-  const _LiveWorkMemberRow({
-    required this.member,
-    required this.now,
-    super.key,
-  });
-
-  final LiveWorkMember member;
-  final DateTime Function()? now;
-
-  @override
-  Widget build(BuildContext context) {
-    final reducedMotion = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
-    final verb = _memberVerb(context, member);
-    final summary = member.summary.trim();
-    final label =
-        summary.isEmpty || summary == verb || summary == member.toolName
-        ? verb
-        : '$verb · $summary';
-    final (icon, iconColor, isIssue) = _memberVisual(context, member);
-
-    return TimelineActivityClock(
-      startedAtMillis: member.startedAtMs,
-      finishedAtMillis: member.finishedAtMs,
-      running: member.isActive,
-      now: now,
-      builder: (context, seconds) {
-        final duration = seconds == null
-            ? null
-            : activityDurationLabel(
-                context,
-                seconds,
-                kind: ActivityDurationKind.elapsed,
-              );
-        return TimelineActivityRow(
-          label: label,
-          icon: icon,
-          iconColor: iconColor,
-          isIssue: isIssue,
-          active: member.isActive && !reducedMotion,
-          indicatorStyle: TimelineActivityIndicatorStyle.circularProgress,
-          expandable: false,
-          meta: duration,
-          semanticsLabel: duration == null ? label : '$label，$duration',
-        );
-      },
-    );
-  }
-
-  static String _memberVerb(BuildContext context, LiveWorkMember member) {
-    final l10n = context.l10n;
-    return switch (member.kind) {
-      'thinking' => l10n.liveWorkKindThinking,
-      'read' || 'readImage' => l10n.liveWorkKindRead,
-      'edit' => l10n.liveWorkKindEdit,
-      'search' => l10n.liveWorkKindSearch,
-      'command' => l10n.liveWorkKindExec,
-      'wait' => l10n.liveWorkKindWait,
-      'agent' => l10n.liveWorkKindAgent,
-      _ => member.toolName.isNotEmpty ? member.toolName : l10n.liveWorkKindTool,
-    };
-  }
-
-  static (IconData, Color, bool) _memberVisual(
-    BuildContext context,
-    LiveWorkMember member,
-  ) {
-    if (member.isFailed) {
-      return (Icons.error_outline, context.colors.error, true);
-    }
-    if (member.isCancelled) {
-      return (
-        Icons.cancel_outlined,
-        context.colors.onSurfaceVariant.withValues(alpha: .68),
-        false,
+  String? _activeToolHeadline(BuildContext context) {
+    final activeTool = working.items
+        .whereType<WorkGroupToolCall>()
+        .where((tool) => isLiveToolActive(tool.status))
+        .lastOrNull;
+    if (activeTool == null) return null;
+    final tool = workGroupToolPresentationFromMember(activeTool, isLive: true);
+    final adapter = timelineToolItemRegistry.resolveForPresentation(tool);
+    final controller = adapter.createController(tool);
+    try {
+      final summary = adapter.buildRowSummary(
+        TimelineToolItemContext(
+          buildContext: context,
+          l10n: context.l10n,
+          item: tool,
+          controller: controller,
+        ),
       );
+      final trimmed = summary.label.trim();
+      return trimmed.isEmpty ? null : trimmed;
+    } finally {
+      controller.dispose();
     }
-    if (member.isCompleted) {
-      return (
-        Icons.check_circle_outline,
-        StudioTone.success.indicator(context),
-        false,
-      );
-    }
-    final kindIcon = switch (member.kind) {
-      'thinking' => Icons.psychology_outlined,
-      'read' || 'readImage' => Icons.description_outlined,
-      'edit' => Icons.edit_outlined,
-      'search' => Icons.search,
-      'command' => Icons.terminal,
-      'wait' => Icons.hourglass_bottom_outlined,
-      'agent' => Icons.hub_outlined,
-      _ => Icons.build_outlined,
-    };
-    return (kindIcon, StudioTone.active.indicator(context), false);
   }
 }
 

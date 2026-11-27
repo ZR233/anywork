@@ -113,6 +113,40 @@ Widget toolDetailPreviewMediaSlot(TimelineToolPresentation item) {
 
 @Preview(name: '工具展开 / exec', group: '工具详情', size: Size(960, 640))
 Widget execToolDetailPreview() => _tool('builtin.exec@2');
+@Preview(name: '工具展开 / exec 失败与退出码', group: '工具详情', size: Size(960, 640))
+Widget failedExecToolDetailPreview() => _toolHost(
+  TimelineToolItemView(
+    item: TimelineToolPresentation(
+      id: 'preview-failed-exec',
+      toolCallId: 'call-preview-failed-exec',
+      name: 'exec',
+      presentationContract: 'builtin.exec@2',
+      statusString: 'failed',
+      arguments: '{"command":"cargo flutter analyze"}',
+      output: '{"stdout":{"content":"Analyzing code/anywork..."},"stderr":{"content":"[stderr] error: missing required parameter"},"exitCode":101}',
+      exitCode: 101,
+      createdAt: DateTime.utc(2025, 1, 1, 0, 0, 0),
+      completedAt: DateTime.utc(2025, 1, 1, 0, 0, 8),
+    ),
+    initiallyExpanded: true,
+  ),
+);
+@Preview(name: '工具展开 / exec 转后台', group: '工具详情', size: Size(960, 640))
+Widget backgroundExecToolDetailPreview() => _toolHost(
+  TimelineToolItemView(
+    item: TimelineToolPresentation(
+      id: 'preview-background-exec',
+      toolCallId: 'call-preview-background-exec',
+      name: 'exec',
+      presentationContract: 'builtin.exec@2',
+      statusString: 'backgrounded',
+      arguments: '{"command":"cargo xtask preview-gui --headless"}',
+      output: '',
+      createdAt: DateTime.utc(2025, 1, 1, 0, 0, 0),
+    ),
+    initiallyExpanded: false,
+  ),
+);
 @Preview(name: '工具展开 / write_stdin', group: '工具详情', size: Size(960, 640))
 Widget writeStdinToolDetailPreview() => _tool('builtin.write_stdin@1');
 @Preview(name: '工具展开 / read_session_note', group: '工具详情', size: Size(960, 640))
@@ -154,6 +188,18 @@ Widget movePathToolDetailPreview() => _tool('builtin.move_path@1');
 Widget spawnAgentToolDetailPreview() => _tool('builtin.spawn_agent@1');
 @Preview(name: '工具展开 / send_message', group: '工具详情', size: Size(960, 640))
 Widget sendMessageToolDetailPreview() => _tool('builtin.send_message@1');
+@Preview(name: '工具展开 / read_agent_session', group: '工具详情', size: Size(960, 640))
+Widget readAgentSessionToolDetailPreview() => _toolHost(
+  TimelineToolItemView(
+    item: ToolDetailPreviewFixture(
+      name: 'read_agent_session',
+      contract: 'builtin.read_agent_session@1',
+      arguments: const {'target': 'thread-66137cebcce11-a', 'limit': 20},
+      output: '{"items":[{"summary":"已核对历史工作组与实时工作组接口一致","status":"completed"}],"nextCursor":"cursor-2"}',
+    ).toPresentation('preview-read-agent-session'),
+    initiallyExpanded: true,
+  ),
+);
 @Preview(name: '工具展开 / wait', group: '工具详情', size: Size(960, 640))
 Widget waitToolDetailPreview() => _tool('builtin.wait@1');
 @Preview(name: '工具展开 / sleep', group: '工具详情', size: Size(960, 640))

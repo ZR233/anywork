@@ -18,8 +18,13 @@ class WriteStdinToolItem extends StructuredTimelineToolAdapter {
   String get id => contractId;
 
   @override
-  TimelineToolMatcher get matcher =>
-      const TimelineToolMatcher.contract(contractId);
+  TimelineToolMatcher get matcher => const TimelineToolMatcher.anyOf([
+    TimelineToolMatcher.contract(contractId),
+    TimelineToolMatcher.toolName('write_stdin', requireEmptyContract: true),
+  ]);
+
+  @override
+  List<String> get targetFields => const ['chars'];
 
   @override
   String displayName(AppLocalizations l10n, TimelineToolPresentation item) =>
@@ -36,6 +41,8 @@ class WriteStdinToolItem extends StructuredTimelineToolAdapter {
         running: l10n.timelineToolStdinRunning,
         failed: l10n.timelineToolStdinFailed,
         succeeded: l10n.timelineToolStdinSucceeded,
+        backgroundStarted: l10n.timelineToolStateBackgroundStarted,
+        backgrounded: l10n.timelineToolStateBackgrounded,
       );
 
   @override

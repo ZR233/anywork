@@ -17,14 +17,16 @@ void main() {
     final workingSnapshot = feed.LiveStatusSnapshot(
       revision: 1,
       phase: feed.LiveStatusWorking(
-        items: const [
-          feed.LiveWorkItem(
+        items: [
+          feed.WorkGroupToolCall(
             id: 'call:1',
+            seq: 1,
             callId: '1',
-            kind: 'command',
             toolName: 'exec',
             status: 'completed',
             summary: 'cargo test',
+            payloadJson: '{}',
+            bodies: const [],
             startedAtMs: 100,
             finishedAtMs: 250,
           ),
@@ -103,15 +105,17 @@ void main() {
       ),
     );
 
-    // 5. Working maps LiveWorkItem including finishedAtMs
+    // 5. Working passes through WorkGroupMember items including finishedAtMs
     final workingView = LiveStatusMachine.project(
       'thread-main',
       workingSnapshot,
       receivedAt: now,
     );
     final working = workingView.state as LiveStatusWorkingState;
-    expect(working.items.single.finishedAtMs, 250);
-    expect(working.items.single.isCompleted, isTrue);
+    final mappedTool = working.items.single as feed.WorkGroupToolCall;
+    expect(mappedTool.finishedAtMs, 250);
+    expect(mappedTool.status, 'completed');
+    expect(working.hasRunningCommand, isFalse);
     expect(working.reasoningPreview, '分析状态机边界');
 
     // 6. Alert arbitration picks highest single priority: storage > disconnected > approval

@@ -6,6 +6,7 @@ import 'package:anywork/src/domain/models/timeline_commands.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_view_state.dart';
 import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_patch_diff_view.dart';
 import 'package:anywork/src/features/conversation/timeline/tools/tool_item_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
@@ -446,6 +447,137 @@ void main() {
       expect(find.text(message), findsOneWidget);
       expect(find.textContaining('task:internal-preview'), findsNothing);
       expect(tester.takeException(), isNull);
+    }
+  });
+
+  testWidgets('新增协作工具与后台命令状态在展开与窄屏下可读且无原始线程哈希泄漏', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 900);
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    final cases = [
+      (
+        contract: 'builtin.read_agent_session@1',
+        name: 'read_agent_session',
+        status: 'succeeded',
+        arguments: jsonEncode({
+          'target': 'thread-66137cebcce11-a',
+          'cursor': 'cursor-1',
+          'limit': 20,
+        }),
+        output: jsonEncode({
+          'items': [
+            {'summary': '子智能体读取完成', 'status': 'completed'},
+          ],
+          'nextCursor': 'cursor-2',
+        }),
+        rowShouldNotContain: 'thread-66137cebcce11-a',
+        expandedExpected: '子智能体读取完成',
+      ),
+      (
+        contract: 'builtin.evaluate_agent@1',
+        name: 'evaluate_agent',
+        status: 'succeeded',
+        arguments: jsonEncode({
+          'target': 'thread-66137cebcce11-b',
+          'role': 'verifier',
+          'outcome': 'passed',
+          'quality': 5,
+          'instructionFollowing': 4,
+          'comment': '验证结构清晰，单测覆盖完整',
+        }),
+        output: '{}',
+        rowShouldNotContain: 'thread-66137cebcce11-b',
+        expandedExpected: '验证结构清晰，单测覆盖完整',
+      ),
+      (
+        contract: 'builtin.list_agents@1',
+        name: 'list_agents',
+        status: 'succeeded',
+        arguments: '{}',
+        output: jsonEncode([
+          {'id': 'worker-a', 'role': 'builder', 'status': 'running'},
+        ]),
+        rowShouldNotContain: 'worker-a',
+        expandedExpected: 'builder',
+      ),
+      (
+        contract: 'builtin.interrupt_agent@1',
+        name: 'interrupt_agent',
+        status: 'succeeded',
+        arguments: jsonEncode({
+          'target': 'thread-66137cebcce11-c',
+          'reason': '切换执行方案',
+        }),
+        output: jsonEncode({'interrupted': true}),
+        rowShouldNotContain: 'thread-66137cebcce11-c',
+        expandedExpected: '切换执行方案',
+      ),
+      (
+        contract: 'builtin.close_agent@1',
+        name: 'close_agent',
+        status: 'succeeded',
+        arguments: jsonEncode({'target': 'thread-66137cebcce11-d'}),
+        output: jsonEncode({
+          'target': 'thread-66137cebcce11-d',
+          'agents': [
+            {'agentId': 'worker-d', 'executionClosed': true},
+          ],
+        }),
+        rowShouldNotContain: 'thread-66137cebcce11-d',
+        expandedExpected: 'worker-d',
+      ),
+      (
+        contract: 'builtin.wait_agent@1',
+        name: 'wait_agent',
+        status: 'succeeded',
+        arguments: jsonEncode({
+          'target': 'thread-66137cebcce11-e',
+          'timeoutMs': 5000,
+        }),
+        output: jsonEncode({
+          'target': 'thread-66137cebcce11-e',
+          'report': '构建与分析通过',
+          'timedOut': false,
+        }),
+        rowShouldNotContain: 'thread-66137cebcce11-e',
+        expandedExpected: '构建与分析通过',
+      ),
+    ];
+
+    for (final testCase in cases) {
+      await tester.pumpWidget(
+        _host(
+          TimelineToolItemView(
+            initiallyExpanded: true,
+            item: ToolDetailPreviewFixture(
+              name: testCase.name,
+              contract: testCase.contract,
+              arguments: jsonDecode(testCase.arguments) as Map<String, Object?>,
+              output: testCase.output,
+              status: testCase.status,
+            ).toPresentation('preview-${testCase.name}'),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final row = tester.widget<TimelineActivityRow>(
+        find.byType(TimelineActivityRow),
+      );
+      expect(
+        row.label,
+        isNot(contains(testCase.rowShouldNotContain)),
+        reason: testCase.contract,
+      );
+      expect(
+        find.textContaining(testCase.expandedExpected),
+        findsWidgets,
+        reason: testCase.contract,
+      );
+      expect(tester.takeException(), isNull, reason: testCase.contract);
     }
   });
 }

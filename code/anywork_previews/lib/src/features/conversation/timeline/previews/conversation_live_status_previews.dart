@@ -1,13 +1,17 @@
+import 'dart:convert';
+
 import 'package:anywork_client/models.dart' hide LiveStatusIdle;
 import 'package:anywork_client/models.dart' as feed show LiveStatusIdle;
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/widget_previews.dart';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
+import 'package:anywork/src/app/theme/studio_tokens.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/timeline_views.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
+import 'package:anywork/src/features/conversation/timeline/work_group/work_group_member_view.dart';
 
 import 'timeline_preview_fixtures.dart';
 
@@ -288,13 +292,15 @@ Widget conversationFourStatesComparisonPreview() => liveStatusPreviewHost(
               revision: 1,
               phase: LiveStatusWorking(
                 items: [
-                  LiveWorkItem(
+                  WorkGroupToolCall(
                     id: 'preview-exec-call',
+                    seq: 1,
                     callId: 'preview-exec-call',
-                    kind: 'command',
                     toolName: 'exec',
                     status: 'running',
                     summary: 'cargo flutter test --no-pub test/ui',
+                    payloadJson: '{}',
+                    bodies: const [],
                     startedAtMs: (100) * 1000,
                   ),
                 ],
@@ -368,32 +374,36 @@ Widget conversationLiveStatusToolsPreview() => liveStatusPreviewHost(
       revision: 1,
       phase: LiveStatusWorking(
         items: [
-          LiveWorkItem(
+          const WorkGroupReasoning(
             id: 'preview-reasoning',
-            kind: 'thinking',
-            toolName: 'thinking',
-            status: 'completed',
+            seq: 1,
+            text: '梳理会话共享组件与状态机迁移边界',
             summary: '梳理会话共享组件与状态机迁移边界',
+            outcome: 'completed',
             startedAtMs: 100_000,
             finishedAtMs: 104_000,
           ),
-          LiveWorkItem(
+          WorkGroupToolCall(
             id: 'preview-command',
+            seq: 2,
             callId: 'preview-command',
-            kind: 'command',
             toolName: 'exec',
             status: 'completed',
             summary: 'cargo flutter analyze',
+            payloadJson: '{}',
+            bodies: const [],
             startedAtMs: 104_000,
             finishedAtMs: 112_000,
           ),
-          LiveWorkItem(
+          WorkGroupToolCall(
             id: 'preview-read',
+            seq: 3,
             callId: 'preview-read',
-            kind: 'read',
             toolName: 'read_file',
             status: 'running',
             summary: 'design/26-timeline-content.md',
+            payloadJson: '{}',
+            bodies: const [],
             startedAtMs: 112_000,
           ),
         ],
@@ -432,13 +442,15 @@ Widget conversationLiveStatusFailedCallPreview() => liveStatusPreviewHost(
       revision: 1,
       phase: LiveStatusWorking(
         items: [
-          LiveWorkItem(
+          WorkGroupToolCall(
             id: 'preview-failed-call',
+            seq: 1,
             callId: 'preview-failed-call',
-            kind: 'command',
             toolName: 'exec',
             status: 'failed',
             summary: 'cargo flutter analyze',
+            payloadJson: '{}',
+            bodies: const [],
             startedAtMs: 154_000,
             finishedAtMs: 162_000,
           ),
@@ -461,12 +473,12 @@ Widget conversationLiveStatusThinkingPreview() => liveStatusPreviewHost(
       revision: 1,
       phase: LiveStatusWorking(
         items: [
-          LiveWorkItem(
+          const WorkGroupReasoning(
             id: 'preview-thinking-detail',
-            kind: 'thinking',
-            toolName: 'thinking',
-            status: 'running',
+            seq: 1,
+            text: '核对现有调用链和组件边界',
             summary: '核对现有调用链和组件边界',
+            outcome: 'running',
             startedAtMs: 100_000,
           ),
         ],
@@ -524,13 +536,15 @@ Widget conversationLiveStatusWaitPreview() => liveStatusPreviewHost(
       revision: 1,
       phase: LiveStatusWorking(
         items: [
-          LiveWorkItem(
+          WorkGroupToolCall(
             id: 'preview-wait-member',
+            seq: 1,
             callId: 'preview-wait-member',
-            kind: 'wait',
             toolName: 'wait',
             status: 'running',
             summary: '等待成员汇报结果',
+            payloadJson: '{}',
+            bodies: const [],
             startedAtMs: 100_000,
           ),
         ],
@@ -815,22 +829,26 @@ Widget conversationLiveStatusDeferredToolsAndDurationsPreview() =>
                   revision: 1,
                   phase: LiveStatusWorking(
                     items: [
-                      LiveWorkItem(
+                      WorkGroupToolCall(
                         id: 'hourly-exec',
+                        seq: 1,
                         callId: 'hourly-exec',
-                        kind: 'command',
                         toolName: 'exec',
                         status: 'running',
                         summary: 'cargo flutter test --no-pub test/ui',
+                        payloadJson: '{}',
+                        bodies: const [],
                         startedAtMs: (100) * 1000,
                       ),
-                      LiveWorkItem(
+                      WorkGroupToolCall(
                         id: 'hourly-write',
+                        seq: 2,
                         callId: 'hourly-write',
-                        kind: 'edit',
                         toolName: 'write_file',
                         status: 'completed',
                         summary: 'design/19-studio-ui.md',
+                        payloadJson: '{}',
+                        bodies: const [],
                         startedAtMs: (100) * 1000,
                         finishedAtMs: (105) * 1000,
                       ),
@@ -853,13 +871,15 @@ Widget conversationLiveStatusDeferredToolsAndDurationsPreview() =>
                   revision: 1,
                   phase: LiveStatusWorking(
                     items: [
-                      LiveWorkItem(
+                      WorkGroupToolCall(
                         id: 'write-tool',
+                        seq: 1,
                         callId: 'write-tool',
-                        kind: 'tool',
                         toolName: 'write_file',
                         status: 'running',
                         summary: '写入 design/19-studio-ui.md',
+                        payloadJson: '{}',
+                        bodies: const [],
                         startedAtMs: (100) * 1000,
                       ),
                     ],
@@ -945,21 +965,21 @@ Widget conversationReasoningVariantsPreview() => liveStatusPreviewHost(
       revision: 1,
       phase: LiveStatusWorking(
         items: [
-          LiveWorkItem(
+          const WorkGroupReasoning(
             id: 'reasoning-1',
-            kind: 'thinking',
-            toolName: 'thinking',
-            status: 'completed',
+            seq: 1,
+            text: '梳理会话共享组件与锁定边界',
             summary: '梳理会话共享组件与锁定边界',
+            outcome: 'completed',
             startedAtMs: 100_000,
             finishedAtMs: 108_000,
           ),
-          LiveWorkItem(
+          const WorkGroupReasoning(
             id: 'reasoning-2',
-            kind: 'thinking',
-            toolName: 'thinking',
-            status: 'running',
+            seq: 2,
+            text: '核对运行期选择器锁定规则',
             summary: '核对运行期选择器锁定规则',
+            outcome: 'running',
             startedAtMs: 108_000,
           ),
         ],
@@ -981,13 +1001,15 @@ Widget conversationLiveStatusLongToolPreview() => liveStatusPreviewHost(
       revision: 1,
       phase: LiveStatusWorking(
         items: [
-          LiveWorkItem(
+          WorkGroupToolCall(
             id: 'long-tool-output',
+            seq: 1,
             callId: 'long-tool-output',
-            kind: 'command',
             toolName: 'exec',
             status: 'running',
             summary: 'cargo flutter analyze --fatal-infos',
+            payloadJson: '{}',
+            bodies: const [],
             startedAtMs: (100) * 1000,
           ),
         ],
@@ -1141,5 +1163,567 @@ class _SealedToolWorkGroupPreviewState
         ),
       ],
     ),
+  );
+}
+
+List<WorkGroupMember> _buildMixedWorkGroupMembers() => [
+  const WorkGroupReasoning(
+    id: 'matrix-reasoning-1',
+    seq: 1,
+    text: '- 收敛 `WorkGroupMemberRegistry` 匹配分派表\n- 确认 **实时与历史工作组** 共用 `WorkGroupMemberView`',
+    summary: '**梳理** `WorkGroupMemberRegistry` 分派边界',
+    outcome: 'completed',
+    startedAtMs: 100_000,
+    finishedAtMs: 104_000,
+  ),
+  const WorkGroupReasoning(
+    id: 'matrix-reasoning-2',
+    seq: 2,
+    text: '',
+    summary: 'Designing **ToolResult** views 与 `WorkGroupMemberView` 单行排版',
+    outcome: 'running',
+    startedAtMs: 104_000,
+  ),
+  WorkGroupToolCall(
+    id: 'matrix-exec-running',
+    seq: 3,
+    callId: 'call-exec-running',
+    toolName: 'exec',
+    presentationContract: 'builtin.exec@2',
+    status: 'running',
+    summary: 'exec',
+    arguments: '{"command":"cargo flutter test --no-pub test/ui"}',
+    payloadJson: '{}',
+    bodies: const [],
+    startedAtMs: 106_000,
+  ),
+  WorkGroupToolCall(
+    id: 'matrix-exec-succeeded',
+    seq: 4,
+    callId: 'call-exec-succeeded',
+    toolName: 'exec',
+    presentationContract: 'builtin.exec@2',
+    status: 'succeeded',
+    summary: 'exec',
+    arguments: '{"command":"cargo test -p pl-studio-runtime timeline::"}',
+    resultPreview: '{"stdout":{"content":"test result: ok. 42 passed"},"stderr":{"content":""},"exitCode":0}',
+    payloadJson: '{}',
+    bodies: const [],
+    startedAtMs: 106_000,
+    finishedAtMs: 111_000,
+  ),
+  WorkGroupToolCall(
+    id: 'matrix-exec-failed',
+    seq: 5,
+    callId: 'call-exec-failed',
+    toolName: 'exec',
+    presentationContract: 'builtin.exec@2',
+    status: 'failed',
+    summary: 'exec',
+    payloadJson: jsonEncode({
+      'contract': 'anywork.event/1',
+      'type': 'tool',
+      'meta': {'presentationContract': 'builtin.exec@2'},
+      'data': {
+        'invocation': {
+          'toolCallId': 'call-exec-failed',
+          'name': 'exec',
+          'presentationContract': 'builtin.exec@2',
+          'workingDirectory': '/workspace/sample-project',
+        },
+        'state': {
+          'kind': 'failed',
+          'completedAt': 119,
+          'output': {'exitCode': 101, 'attachments': []},
+        },
+      },
+      'bodies': [
+        TimelinePreviewFixtures.body(
+          'tool.arguments',
+          '{"command":"cargo flutter analyze"}',
+        ),
+        TimelinePreviewFixtures.body(
+          'tool.result',
+          jsonEncode({
+            'stdout': {'content': 'Analyzing code/anywork...'},
+            'stderr': {
+              'content': '[stderr] error: The named parameter "member" is required (work_group_member_view.dart:18:5)',
+            },
+            'exitCode': 101,
+          }),
+        ),
+      ],
+    }),
+    bodies: const [],
+    startedAtMs: 111_000,
+    finishedAtMs: 119_000,
+  ),
+  WorkGroupToolCall(
+    id: 'matrix-exec-backgrounded',
+    seq: 6,
+    callId: 'call-exec-bg',
+    toolName: 'exec',
+    presentationContract: 'builtin.exec@2',
+    status: 'backgrounded',
+    summary: 'exec',
+    arguments: '{"command":"cargo xtask preview-gui --headless"}',
+    payloadJson: '{}',
+    bodies: const [],
+    startedAtMs: 119_000,
+  ),
+  WorkGroupAgent(
+    id: 'matrix-agent-1',
+    seq: 7,
+    agentId: 'thread-66137d7bee82c-14',
+    name: 'thread-66137d7bee82c-14',
+    status: 'running',
+    summary: '审查工作组成员注册分派与单行排版',
+    payloadJson: jsonEncode({
+      'contract': 'anywork.event/1',
+      'type': 'agent',
+      'data': {
+        'identity': {'role': 'reviewer', 'taskSummary': '审查工作组成员注册分派与单行排版'},
+        'outcome': {'kind': 'active'},
+      },
+    }),
+    startedAtMs: 120_000,
+  ),
+  WorkGroupToolCall(
+    id: 'matrix-read-agent-session',
+    seq: 8,
+    callId: 'call-read-agent-session',
+    toolName: 'read_agent_session',
+    presentationContract: 'builtin.read_agent_session@1',
+    status: 'succeeded',
+    summary: 'read_agent_session',
+    arguments: '{"target":"thread-66137cebcce11-a","limit":20}',
+    resultPreview: jsonEncode({
+      'items': [
+        {'summary': '已核对历史工作组与实时工作组接口一致', 'status': 'completed'},
+      ],
+      'nextCursor': 'cursor-2',
+    }),
+    payloadJson: '{}',
+    bodies: const [],
+    startedAtMs: 121_000,
+    finishedAtMs: 122_000,
+  ),
+  WorkGroupToolCall(
+    id: 'matrix-spawn-agent',
+    seq: 9,
+    callId: 'call-spawn-agent',
+    toolName: 'spawn_agent',
+    presentationContract: 'builtin.spawn_agent@1',
+    status: 'succeeded',
+    summary: 'spawn_agent',
+    arguments: jsonEncode({
+      'profileId': 'executor',
+      'taskSummary': '核对 360px 窄窗与大字号排版',
+      'message': '验证工作组折叠行和展开详情在大字号下无溢出。',
+    }),
+    resultPreview: jsonEncode({
+      'agentId': 'thread-66137cebcce11-b',
+      'messageAccepted': true,
+    }),
+    payloadJson: '{}',
+    bodies: const [],
+    startedAtMs: 122_000,
+    finishedAtMs: 123_000,
+  ),
+  WorkGroupToolCall(
+    id: 'matrix-send-message',
+    seq: 10,
+    callId: 'call-send-message',
+    toolName: 'send_message',
+    presentationContract: 'builtin.send_message@1',
+    status: 'succeeded',
+    summary: 'send_message',
+    arguments: jsonEncode({
+      'target': 'thread-66137cebcce11-c',
+      'targetName': 'builder',
+      'message': '请补充实时工作组对照预览并验证分析检查。',
+    }),
+    resultPreview: jsonEncode({'messageAccepted': true}),
+    payloadJson: '{}',
+    bodies: const [],
+    startedAtMs: 123_000,
+    finishedAtMs: 124_000,
+  ),
+  WorkGroupFileChange(
+    id: 'matrix-file-change',
+    seq: 11,
+    summary: 'work_group/work_group_member_view.dart',
+    payloadJson: jsonEncode({
+      'contract': 'anywork.event/1',
+      'type': 'fileChange',
+      'data': {
+        'path': 'work_group/work_group_member_view.dart',
+        'action': 'modified',
+      },
+    }),
+    bodies: const [],
+    occurredAtMs: 124_000,
+  ),
+  const WorkGroupSkill(
+    id: 'matrix-skill',
+    seq: 12,
+    name: 'flutter-studio-build',
+    summary: 'flutter-studio-build',
+    payloadJson: '{"name":"flutter-studio-build","summary":"无头预览与分析规范"}',
+    occurredAtMs: 125_000,
+  ),
+];
+
+@Preview(name: '工作组 / 顶行思考摘要（折叠态）', group: '实时状态栏', size: Size(760, 260))
+Widget conversationLiveStatusReasoningHeaderCollapsedPreview() =>
+    liveStatusPreviewHost(
+      SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _previewScenario(
+              '工况 1 · 仅展示最新单条思考摘要（含行内加粗，折叠态）',
+              _liveMachineSurface(
+                snapshot: LiveStatusSnapshot(
+                  revision: 1,
+                  phase: LiveStatusWorking(
+                    items: [
+                      const WorkGroupReasoning(
+                        id: 'collapsed-r1',
+                        seq: 1,
+                        text: '先梳理旧状态机字段',
+                        summary: '**梳理**旧状态机字段',
+                        outcome: 'completed',
+                        startedAtMs: 100_000,
+                        finishedAtMs: 104_000,
+                      ),
+                      const WorkGroupReasoning(
+                        id: 'collapsed-r2',
+                        seq: 2,
+                        text: 'Designing **ToolResult** views for work group rows',
+                        summary: 'Designing **ToolResult** views',
+                        outcome: 'running',
+                        startedAtMs: 104_000,
+                      ),
+                      WorkGroupToolCall(
+                        id: 'collapsed-exec',
+                        seq: 3,
+                        callId: 'collapsed-exec',
+                        toolName: 'exec',
+                        presentationContract: 'builtin.exec@2',
+                        status: 'running',
+                        summary: 'exec',
+                        arguments: '{"command":"cargo test -p pl-studio-runtime timeline::"}',
+                        payloadJson: '{}',
+                        bodies: const [],
+                        startedAtMs: 106_000,
+                      ),
+                    ],
+                    reasoningPreview: 'Designing **ToolResult** views',
+                    startedAtMs: 100_000,
+                  ),
+                  attentions: const [],
+                  suppressedByInteraction: false,
+                ),
+                liveWorkInitiallyExpanded: false,
+                now: () => DateTime.fromMillisecondsSinceEpoch(138_000),
+              ),
+            ),
+            _previewScenario(
+              '工况 2 · 多段无换行强调安全分隔（无星号乱码）',
+              _liveMachineSurface(
+                snapshot: LiveStatusSnapshot(
+                  revision: 2,
+                  phase: LiveStatusWorking(
+                    items: const [
+                      WorkGroupReasoning(
+                        id: 'collapsed-r3',
+                        seq: 1,
+                        text: '详细分析行内代码与加粗边界',
+                        summary:
+                            '**Phase A****Designing `WorkGroupMemberView`**',
+                        outcome: 'completed',
+                        startedAtMs: 100_000,
+                        finishedAtMs: 108_000,
+                      ),
+                    ],
+                    reasoningPreview:
+                        '**Phase A****Designing `WorkGroupMemberView`**',
+                    startedAtMs: 100_000,
+                  ),
+                  attentions: const [],
+                  suppressedByInteraction: false,
+                ),
+                liveWorkInitiallyExpanded: false,
+                now: () => DateTime.fromMillisecondsSinceEpoch(116_000),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
+@Preview(name: '工作组 / 实时展开混合条目矩阵', group: '实时状态栏', size: Size(820, 1080))
+Widget conversationLiveStatusMixedMatrixPreview() => liveStatusPreviewHost(
+  _liveMachineSurface(
+    snapshot: LiveStatusSnapshot(
+      revision: 1,
+      phase: LiveStatusWorking(
+        items: _buildMixedWorkGroupMembers(),
+        reasoningPreview:
+            'Designing **ToolResult** views 与 `WorkGroupMemberView`',
+        startedAtMs: 100_000,
+      ),
+      attentions: const [],
+      suppressedByInteraction: false,
+    ),
+    liveWorkInitiallyExpanded: true,
+    now: () => DateTime.fromMillisecondsSinceEpoch(138_000),
+  ),
+);
+
+@Preview(name: '工作组 / 实时成员展开详情态', group: '实时状态栏', size: Size(820, 1060))
+Widget conversationLiveStatusMemberDetailsExpandedPreview() {
+  DateTime previewNow() => DateTime.fromMillisecondsSinceEpoch(138_000);
+  final members = _buildMixedWorkGroupMembers();
+  final selected = [
+    members[0], // 带 Markdown 正文的思考
+    members[4], // 失败 exec（含命令与 stderr 分组）
+    members[6], // WorkGroupAgent
+    members[11], // WorkGroupSkill
+  ];
+  return liveStatusPreviewHost(
+    ConversationActivityBar(
+      children: [
+        Builder(
+          builder: (context) => TimelineWorkGroupShell(
+            scrollBody: true,
+            railInset: 15.5,
+            railContentInset: 25.5,
+            initiallyExpanded: true,
+            disclosureKey: const ValueKey('preview-live-details-disclosure'),
+            headerBuilder: (context, expanded) {
+              const titleText =
+                  'Designing **ToolResult** views 与 `WorkGroupMemberView`';
+              final titleStyle = context.text.bodySmall!.copyWith(
+                color: context.colors.onSurface,
+                fontSize: TimelineActivityRow.headerFontSize,
+                fontWeight: FontWeight.w500,
+                height: 1.36,
+              );
+              return TimelineActivityRow(
+                label: timelineMarkdownPlainText(titleText),
+                labelWidget: TimelineReasoningSummary(
+                  id: 'preview-live-details-summary',
+                  text: titleText,
+                  style: titleStyle,
+                  strutStyle: TimelineActivityRow.headerStrutStyle,
+                  inlineCodeBackgroundColor: context.colors.surfaceContainerHigh
+                      .withValues(alpha: .75),
+                ),
+                labelColor: titleStyle.color,
+                icon: Icons.psychology_outlined,
+                iconColor: StudioTone.active.indicator(context),
+                indicatorStyle: TimelineActivityIndicatorStyle.restingCat,
+                active: true,
+                emphasized: true,
+                header: true,
+                expandable: true,
+                expanded: expanded,
+                meta: '执行了 38 秒',
+              );
+            },
+            bodyBuilder: (context) => Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (var i = 0; i < selected.length; i++) ...[
+                  if (i > 0) const SizedBox(height: 2),
+                  WorkGroupMemberView(
+                    key: ValueKey('details-${selected[i].id}'),
+                    member: selected[i],
+                    isLive: true,
+                    now: previewNow,
+                    initiallyExpanded: i < 2,
+                    bodyBuilder: (id, text) => TimelineMarkdown(
+                      id: id,
+                      text: text,
+                      onLink: (_) {},
+                      isSafeLink: (_) => false,
+                      imageBuilder: (_, url) => Text(url),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+@Preview(name: '工作组对照 / 实时 vs 历史工作组', group: '实时状态栏', size: Size(820, 820))
+Widget conversationLiveVsHistoryWorkGroupPreview() {
+  DateTime previewNow() => DateTime.fromMillisecondsSinceEpoch(138_000);
+  final mixed = _buildMixedWorkGroupMembers();
+  final historyAgent = WorkGroupAgent(
+    id: 'history-agent-1',
+    seq: 7,
+    agentId: 'thread-66137d7bee82c-14',
+    name: 'thread-66137d7bee82c-14',
+    status: 'completed',
+    summary: '审查工作组成员注册分派与单行排版',
+    payloadJson: jsonEncode({
+      'contract': 'anywork.event/1',
+      'type': 'agent',
+      'data': {
+        'identity': {'role': 'reviewer', 'taskSummary': '审查工作组成员注册分派与单行排版'},
+        'outcome': {'kind': 'completed'},
+      },
+    }),
+    startedAtMs: 120_000,
+    finishedAtMs: 132_000,
+  );
+  final sharedMembers = [
+    mixed[0],
+    mixed[3],
+    mixed[4],
+    historyAgent,
+    mixed[10],
+    mixed[11],
+  ];
+  return liveStatusPreviewHost(
+    SingleChildScrollView(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _previewScenario(
+            '工况 1 · 实时工作组（顶行最新思考摘要 + 状态猫 + 共用 WorkGroupMemberView）',
+            _liveMachineSurface(
+              snapshot: LiveStatusSnapshot(
+                revision: 1,
+                phase: LiveStatusWorking(
+                  items: [
+                    sharedMembers[0],
+                    mixed[2],
+                    sharedMembers[1],
+                    mixed[6],
+                  ],
+                  reasoningPreview: 'Designing **ToolResult** views',
+                  startedAtMs: 100_000,
+                ),
+                attentions: const [],
+                suppressedByInteraction: false,
+              ),
+              liveWorkInitiallyExpanded: true,
+              now: previewNow,
+            ),
+          ),
+          _previewScenario(
+            '工况 2 · 历史已封存工作组（顶行纯文本工作时长 + 共用 WorkGroupMemberView）',
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: CompletionRunView(
+                id: 'preview-history-vs-live',
+                timing: const WorkTiming(
+                  startedAtMillis: 100_000,
+                  finishedAtMillis: 138_000,
+                ),
+                initiallyExpanded: true,
+                location: WorkDisplayLocation.history,
+                childBuilder: (_) => Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    for (final member in sharedMembers.take(5))
+                      WorkGroupMemberView(
+                        key: ValueKey('history-${member.id}'),
+                        member: member,
+                        isLive: false,
+                        now: previewNow,
+                        bodyBuilder: (id, text) => TimelineMarkdown(
+                          id: id,
+                          text: text,
+                          onLink: (_) {},
+                          isSafeLink: (_) => false,
+                          imageBuilder: (_, url) => Text(url),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+@Preview(
+  name: '工作组 / 360px 窄窗 150% 大字排版',
+  group: '实时状态栏',
+  size: Size(360, 1020),
+)
+Widget conversationLiveStatusWorkGroupNarrowScaledPreview() {
+  DateTime previewNow() => DateTime.fromMillisecondsSinceEpoch(138_000);
+  final mixed = _buildMixedWorkGroupMembers();
+  return liveStatusPreviewHost(
+    SingleChildScrollView(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _previewScenario(
+            '折叠态顶行（360px / 1.5x）',
+            _liveMachineSurface(
+              snapshot: LiveStatusSnapshot(
+                revision: 1,
+                phase: LiveStatusWorking(
+                  items: mixed,
+                  reasoningPreview: 'Designing **ToolResult** views for `WorkGroupMemberView` in narrow panes',
+                  startedAtMs: 100_000,
+                ),
+                attentions: const [],
+                suppressedByInteraction: false,
+              ),
+              liveWorkInitiallyExpanded: false,
+              now: previewNow,
+            ),
+          ),
+          _previewScenario(
+            '展开态混合成员（360px / 1.5x）',
+            _liveMachineSurface(
+              snapshot: LiveStatusSnapshot(
+                revision: 2,
+                phase: LiveStatusWorking(
+                  items: [
+                    mixed[0],
+                    mixed[2],
+                    mixed[4],
+                    mixed[6],
+                    mixed[7],
+                    mixed[8],
+                    mixed[9],
+                    mixed[10],
+                    mixed[11],
+                  ],
+                  reasoningPreview: 'Designing **ToolResult** views',
+                  startedAtMs: 100_000,
+                ),
+                attentions: const [],
+                suppressedByInteraction: false,
+              ),
+              liveWorkInitiallyExpanded: true,
+              now: previewNow,
+            ),
+          ),
+        ],
+      ),
+    ),
+    scale: 1.5,
   );
 }

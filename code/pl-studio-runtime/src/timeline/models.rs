@@ -368,22 +368,6 @@ pub enum TimelinePatch {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LiveWorkItem {
-    pub id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub call_id: Option<String>,
-    pub kind: String,
-    pub tool_name: String,
-    pub status: String,
-    pub summary: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub started_at_ms: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub finished_at_ms: Option<i64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct LiveAttention {
     pub id: String,
     pub kind: String,
@@ -392,7 +376,7 @@ pub struct LiveAttention {
     pub call_id: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "phase",
     rename_all = "camelCase",
@@ -401,7 +385,7 @@ pub struct LiveAttention {
 pub enum LiveStatusPhase {
     Idle,
     Working {
-        items: Vec<LiveWorkItem>,
+        items: Vec<WorkGroupMember>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reasoning_preview: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -434,7 +418,7 @@ pub enum LiveStatusPhase {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveStatusSnapshot {
     pub revision: u64,

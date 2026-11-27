@@ -15394,7 +15394,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         return BridgeLiveStatusPhase_Idle();
       case 1:
         return BridgeLiveStatusPhase_Working(
-          items: dco_decode_list_bridge_live_work_item(raw[1]),
+          items: dco_decode_list_bridge_work_group_member(raw[1]),
           reasoningPreview: dco_decode_opt_String(raw[2]),
           startedAtMs: dco_decode_opt_box_autoadd_i_64(raw[3]),
         );
@@ -15438,24 +15438,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       phase: dco_decode_bridge_live_status_phase(arr[1]),
       attentions: dco_decode_list_bridge_live_attention(arr[2]),
       suppressedByInteraction: dco_decode_bool(arr[3]),
-    );
-  }
-
-  @protected
-  BridgeLiveWorkItem dco_decode_bridge_live_work_item(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 8)
-      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
-    return BridgeLiveWorkItem(
-      id: dco_decode_String(arr[0]),
-      callId: dco_decode_opt_String(arr[1]),
-      kind: dco_decode_String(arr[2]),
-      toolName: dco_decode_String(arr[3]),
-      status: dco_decode_String(arr[4]),
-      summary: dco_decode_String(arr[5]),
-      startedAtMs: dco_decode_opt_box_autoadd_i_64(arr[6]),
-      finishedAtMs: dco_decode_opt_box_autoadd_i_64(arr[7]),
     );
   }
 
@@ -20839,14 +20821,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>)
         .map(dco_decode_bridge_live_attention)
-        .toList();
-  }
-
-  @protected
-  List<BridgeLiveWorkItem> dco_decode_list_bridge_live_work_item(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return (raw as List<dynamic>)
-        .map(dco_decode_bridge_live_work_item)
         .toList();
   }
 
@@ -31718,7 +31692,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       case 0:
         return BridgeLiveStatusPhase_Idle();
       case 1:
-        var var_items = sse_decode_list_bridge_live_work_item(deserializer);
+        var var_items = sse_decode_list_bridge_work_group_member(deserializer);
         var var_reasoningPreview = sse_decode_opt_String(deserializer);
         var var_startedAtMs = sse_decode_opt_box_autoadd_i_64(deserializer);
         return BridgeLiveStatusPhase_Working(
@@ -31779,31 +31753,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       phase: var_phase,
       attentions: var_attentions,
       suppressedByInteraction: var_suppressedByInteraction,
-    );
-  }
-
-  @protected
-  BridgeLiveWorkItem sse_decode_bridge_live_work_item(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_id = sse_decode_String(deserializer);
-    var var_callId = sse_decode_opt_String(deserializer);
-    var var_kind = sse_decode_String(deserializer);
-    var var_toolName = sse_decode_String(deserializer);
-    var var_status = sse_decode_String(deserializer);
-    var var_summary = sse_decode_String(deserializer);
-    var var_startedAtMs = sse_decode_opt_box_autoadd_i_64(deserializer);
-    var var_finishedAtMs = sse_decode_opt_box_autoadd_i_64(deserializer);
-    return BridgeLiveWorkItem(
-      id: var_id,
-      callId: var_callId,
-      kind: var_kind,
-      toolName: var_toolName,
-      status: var_status,
-      summary: var_summary,
-      startedAtMs: var_startedAtMs,
-      finishedAtMs: var_finishedAtMs,
     );
   }
 
@@ -38958,20 +38907,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var ans_ = <BridgeLiveAttention>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
       ans_.add(sse_decode_bridge_live_attention(deserializer));
-    }
-    return ans_;
-  }
-
-  @protected
-  List<BridgeLiveWorkItem> sse_decode_list_bridge_live_work_item(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var len_ = sse_decode_i_32(deserializer);
-    var ans_ = <BridgeLiveWorkItem>[];
-    for (var idx_ = 0; idx_ < len_; ++idx_) {
-      ans_.add(sse_decode_bridge_live_work_item(deserializer));
     }
     return ans_;
   }
@@ -49817,7 +49752,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         startedAtMs: final startedAtMs,
       ):
         sse_encode_i_32(1, serializer);
-        sse_encode_list_bridge_live_work_item(items, serializer);
+        sse_encode_list_bridge_work_group_member(items, serializer);
         sse_encode_opt_String(reasoningPreview, serializer);
         sse_encode_opt_box_autoadd_i_64(startedAtMs, serializer);
       case BridgeLiveStatusPhase_StreamingText(
@@ -49867,22 +49802,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bridge_live_status_phase(self.phase, serializer);
     sse_encode_list_bridge_live_attention(self.attentions, serializer);
     sse_encode_bool(self.suppressedByInteraction, serializer);
-  }
-
-  @protected
-  void sse_encode_bridge_live_work_item(
-    BridgeLiveWorkItem self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.id, serializer);
-    sse_encode_opt_String(self.callId, serializer);
-    sse_encode_String(self.kind, serializer);
-    sse_encode_String(self.toolName, serializer);
-    sse_encode_String(self.status, serializer);
-    sse_encode_String(self.summary, serializer);
-    sse_encode_opt_box_autoadd_i_64(self.startedAtMs, serializer);
-    sse_encode_opt_box_autoadd_i_64(self.finishedAtMs, serializer);
   }
 
   @protected
@@ -55465,18 +55384,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
       sse_encode_bridge_live_attention(item, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_list_bridge_live_work_item(
-    List<BridgeLiveWorkItem> self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.length, serializer);
-    for (final item in self) {
-      sse_encode_bridge_live_work_item(item, serializer);
     }
   }
 
