@@ -565,7 +565,7 @@ function listMarkup() {
   return `<div class="aw-page-header">
     <div>
       <div class="aw-row">${iconBtn('设置导航', 'mobileNav', 'menu', 'class="aw-menu-mobile"')}<h1>SSH 远程服务器</h1></div>
-      <p class="aw-page-subtitle">同步自 <code>~/.ssh/config</code>；点击服务器进入其 MCP 服务与扩展配置。</p>
+      <p class="aw-page-subtitle">来源：<code>~/.ssh/config</code></p>
     </div>
     ${btn('添加服务器', 'goAddServer', 'filled', 'plus')}
   </div>
@@ -585,12 +585,12 @@ function listMarkup() {
     ${emptyScenario ? `<div class="aw-empty">
       ${icon('server')}
       <h2>尚未配置 SSH 服务器</h2>
-      <p>添加远程服务器后，可在远端打开项目并配置该服务器的 MCP 服务与运行环境。</p>
+
       ${btn('添加服务器', 'goAddServer', 'filled', 'plus')}
     </div>` : !list.length ? `<div class="aw-empty">
       ${icon('search')}
       <h2>没有找到匹配的服务器</h2>
-      <p>请尝试其他关键词或清除搜索条件。</p>
+
       ${btn('清除搜索', 'clearServerSearch', 'tonal')}
     </div>` : list.map(serverRowMarkup).join('')}
   </mdui-card>`;
@@ -674,7 +674,7 @@ function renderMcpRow(m) {
           ${icon('wrench', 'icon')}工具 (${tools.length}) ${icon('chevron-down', 'end-icon')}
         </mdui-button>
         <mdui-menu class="aw-tools-menu-panel">
-          <mdui-list-subheader>点击复制工具标识 (mcp__${escapeHTML(m.id)}__*)</mdui-list-subheader>
+          <mdui-list-subheader>mcp__${escapeHTML(m.id)}__*</mdui-list-subheader>
           ${tools.map(t => `<div class="aw-tool-menu-row" data-action="copyText" data-text="${escapeHTML(t.fullName)}">
             <div class="aw-between"><code>${escapeHTML(t.name)}</code><small class="aw-mono">复制</small></div>
             <small>${escapeHTML(t.desc)}</small>
@@ -710,7 +710,6 @@ function sectionMcpContent(s) {
     return `<mdui-card variant="outlined" class="aw-empty">
       ${icon('network')}
       <h2>${allMcps.length ? '未找到匹配的 MCP 服务' : '尚未配置此服务器的专属 MCP'}</h2>
-      <p>点击右上角「添加 MCP 服务」从预设模板菜单创建远端 stdio 或 HTTP 服务。</p>
     </mdui-card>`;
   }
   return `<mdui-card variant="outlined" class="aw-setting-card">
@@ -808,7 +807,7 @@ function sectionPortsContent(s) {
           <td style="text-align:right">${iconBtn('删除转发', 'deletePortForward', 'trash-2', `data-idx="${idx}" style="color:rgb(var(--mdui-color-error))"`)}</td>
         </tr>`).join('')}
       </tbody>
-    </table>` : `<div class="aw-empty" style="padding:28px"><h3>暂无端口转发规则</h3><p>点击右上角添加 LocalForward 端口映射。</p></div>`}
+    </table>` : `<div class="aw-empty" style="padding:28px"><h3>暂无端口转发规则</h3></div>`}
   </mdui-card>`;
 }
 
@@ -849,7 +848,7 @@ function sectionPolicyContent(s) {
             ${iconBtn('移除项目关联', 'removeProject', 'trash-2', `data-idx="${idx}" style="color:rgb(var(--mdui-color-error))"`)}
           </div>
         </mdui-list-item>
-      `).join('<mdui-divider></mdui-divider>') : `<mdui-list-item nonclickable headline="尚未关联远程项目" description="可通过右上角「打开项目」接入远端目录"></mdui-list-item>`}
+      `).join('<mdui-divider></mdui-divider>') : `<mdui-list-item nonclickable headline="尚未关联远程项目"></mdui-list-item>`}
       <mdui-divider></mdui-divider>
     </mdui-list>
   </mdui-card>`;
@@ -906,7 +905,7 @@ function serverWorkspaceMarkup() {
       <div>
         <div class="aw-row" style="gap:8px">
           <mdui-dropdown placement="bottom-start">
-            <button type="button" slot="trigger" class="aw-server-title-trigger" title="点击切换目标服务器">
+            <button type="button" slot="trigger" class="aw-server-title-trigger" title="切换服务器">
               <span>${escapeHTML(s.alias)}</span>
               ${icon('chevron-down')}
             </button>

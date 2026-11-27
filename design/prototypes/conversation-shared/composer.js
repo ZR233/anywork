@@ -588,7 +588,7 @@
           else if (cmd === 'url') this.helpers.openUrlDialog();
           else if (cmd === 'paste') {
             if (this.controller.addPastedImage()) {
-              this.helpers.toast('已粘贴图片缩略图（点击缩略图可弹层查看大图）');
+              this.helpers.toast('已粘贴图片');
             } else {
               this.helpers.toast(this.controller.state.lockNotice || '当前外部智能体不支持图片输入');
             }
@@ -623,7 +623,7 @@
             ? this.controller.attach(files, { source: 'clipboard' })
             : this.controller.addPastedImage();
           if (ok) {
-            this.helpers.toast('已粘贴图片缩略图（点击缩略图可弹层查看大图）');
+            this.helpers.toast('已粘贴图片');
           } else {
             this.helpers.toast(this.controller.state.lockNotice || '当前外部智能体不支持图片输入');
           }
@@ -691,7 +691,7 @@
                   type="button"
                   class="cv-att-thumb-btn"
                   data-preview-att="${escape(att.id)}"
-                  title="${escape(metaHint)} · 点击弹层查看大图"
+                  title="${escape(metaHint)}"
                   aria-label="查看图片大图 ${escape(att.name)}">
                   <img src="${escape(att.url)}" alt="${escape(att.name)}">
                   <span class="cv-att-thumb-zoom" aria-hidden="true">${icon('zoom-in')}</span>
@@ -1738,7 +1738,7 @@
 
     host.querySelector('[data-start-action="switch-local"]')?.addEventListener('click', () => {
       controller.setWorkspaceMode('local');
-      helpers.toast('已切换为「本地目录」，可直接点击发送');
+      helpers.toast('已切换为「本地目录」');
     });
 
     // Project selector menu & fuzzy search bindings

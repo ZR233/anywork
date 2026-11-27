@@ -58,7 +58,7 @@ const _contextProjection = StudioContextProjection(
 );
 
 const _services = StartedItemsState(
-  skills: ['frontend-design', 'flutter-add-widget-preview'],
+  skills: ['canvas-design', 'flutter-add-widget-preview'],
   skillsTotal: 2,
   mcpStateTotal: 2,
   lspStateTotal: 2,
