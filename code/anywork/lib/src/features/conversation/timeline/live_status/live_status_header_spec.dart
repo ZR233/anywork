@@ -48,7 +48,6 @@ final class LiveStatusHeaderSpec {
     this.labelColor,
     this.labelWidget,
     this.meta,
-    this.tooltip,
     this.semanticsLabel,
     this.emphasized = false,
     this.isIssue = false,
@@ -63,7 +62,6 @@ final class LiveStatusHeaderSpec {
   final Color? labelColor;
   final Widget? labelWidget;
   final String? meta;
-  final String? tooltip;
   final String? semanticsLabel;
   final bool emphasized;
   final bool isIssue;
@@ -225,7 +223,7 @@ final class LiveStatusHeaderSpec {
           )
         : null;
 
-    final tooltip =
+    final semanticsLabel =
         view.errorMessage ??
         thinkingThought ??
         runningToolSummary ??
@@ -278,8 +276,7 @@ final class LiveStatusHeaderSpec {
       labelColor: headerTextColor,
       labelWidget: labelWidget,
       meta: effectiveMeta,
-      tooltip: tooltip,
-      semanticsLabel: tooltip,
+      semanticsLabel: semanticsLabel,
       emphasized: emphasized,
       isIssue: isIssue,
     );
@@ -314,7 +311,6 @@ final class LiveStatusHeaderSpec {
         tone: StudioTone.neutral,
         iconColor: context.colors.onSurfaceVariant.withValues(alpha: .78),
         labelColor: context.colors.onSurfaceVariant,
-        tooltip: label,
         semanticsLabel: label,
         emphasized: false,
         isIssue: false,
@@ -359,7 +355,6 @@ final class LiveStatusHeaderSpec {
           labelColor: base.labelColor,
           labelWidget: base.labelWidget,
           meta: base.meta,
-          tooltip: description,
           semanticsLabel: description,
           emphasized: base.emphasized,
           isIssue: base.isIssue,
@@ -402,7 +397,6 @@ final class LiveStatusHeaderSpec {
         labelColor: titleStyle.color,
         labelWidget: labelWidget,
         meta: base.meta,
-        tooltip: description,
         semanticsLabel: description,
         emphasized: base.emphasized,
         isIssue: base.isIssue,
@@ -420,7 +414,6 @@ final class LiveStatusHeaderSpec {
       iconColor: context.colors.onSurfaceVariant.withValues(alpha: .78),
       labelColor: context.colors.onSurfaceVariant,
       meta: duration,
-      tooltip: description,
       semanticsLabel: description,
       emphasized: false,
       isIssue: false,

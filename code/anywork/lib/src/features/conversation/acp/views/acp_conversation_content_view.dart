@@ -766,7 +766,6 @@ class _AvailableCommandsActivityBlock extends StatelessWidget {
         label: label,
         expanded: expanded,
         expandable: true,
-        tooltip: l10n.acpCommandsSummary(commands.length),
       ),
       children: [
         Wrap(

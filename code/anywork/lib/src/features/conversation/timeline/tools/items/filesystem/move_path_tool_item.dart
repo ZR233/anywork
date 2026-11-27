@@ -53,8 +53,6 @@ class MovePathToolItem extends StructuredTimelineToolAdapter {
       toolTransferInput(l10n, text);
 
   @override
-  ToolRowTarget rowTarget(
-    AppLocalizations l10n,
-    TimelineToolPresentation item,
-  ) => toolTransferRowTarget(item, fallback: super.rowTarget(l10n, item));
+  String? rowTarget(AppLocalizations l10n, TimelineToolPresentation item) =>
+      toolTransferRowTarget(item, fallback: super.rowTarget(l10n, item));
 }

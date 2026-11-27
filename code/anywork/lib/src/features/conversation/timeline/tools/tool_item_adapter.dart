@@ -283,7 +283,6 @@ class TimelineToolRowSummary {
   const TimelineToolRowSummary({
     required this.icon,
     required this.label,
-    this.tooltip,
     this.meta,
     this.active = false,
     this.isIssue = false,
@@ -295,7 +294,6 @@ class TimelineToolRowSummary {
 
   final TimelineToolIcon icon;
   final String label;
-  final String? tooltip;
   final String? meta;
   final bool active;
   final bool isIssue;

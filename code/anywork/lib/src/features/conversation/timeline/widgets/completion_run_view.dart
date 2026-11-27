@@ -126,7 +126,6 @@ class _WorkHeader extends StatelessWidget {
       expanded: expanded,
       meta: spec.meta,
       metaKey: const ValueKey('work-header-elapsed'),
-      tooltip: spec.tooltip,
       semanticsLabel: spec.semanticsLabel,
     );
   }

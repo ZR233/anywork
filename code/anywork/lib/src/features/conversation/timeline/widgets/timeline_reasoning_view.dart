@@ -69,7 +69,7 @@ class TimelineReasoningView extends StatelessWidget {
         labelWidget:
             summaryBuilder?.call(fallback) ??
             (hasSummary ? TimelineReasoningSummary(text: summary!) : null),
-        tooltip: diagnostic == null ? label : '$label\n$diagnostic',
+        semanticsLabel: diagnostic == null ? label : '$label\n$diagnostic',
         expanded: expanded,
         expandable: body != null,
       );

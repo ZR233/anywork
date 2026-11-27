@@ -55,9 +55,6 @@ final class ToolDetailUnavailable extends ToolDetailValue {
   final String reason;
 }
 
-/// Compact row label + full hover tooltip returned by structured tool adapters.
-typedef ToolRowTarget = ({String? label, String? tooltip});
-
 /// Parses structured JSON arguments as a map or throws a localized [FormatException].
 Map<String, dynamic> toolArguments(AppLocalizations l10n, String text) {
   return switch (jsonDecode(text)) {

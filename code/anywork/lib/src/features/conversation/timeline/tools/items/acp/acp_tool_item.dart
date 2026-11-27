@@ -113,17 +113,6 @@ class AcpToolItem extends TimelineToolItemAdapter {
       meta = kindLabel;
     }
 
-    final rawName = scope?.rawName?.trim();
-    final locationSummary = scope == null || scope.locations.isEmpty
-        ? null
-        : scope.locations.first;
-    final tooltip = {
-      label,
-      if (rawName != null && rawName.isNotEmpty && rawName != label) rawName,
-      ?locationSummary,
-      ?meta,
-    }.join('\n');
-
     final cardKey =
         scope?.cardKey ??
         (item.toolCallId.trim().isNotEmpty
@@ -137,7 +126,6 @@ class AcpToolItem extends TimelineToolItemAdapter {
         preserveWhenIssue: true,
       ),
       label: label,
-      tooltip: tooltip,
       meta: meta,
       active: active,
       isIssue: isIssue,
