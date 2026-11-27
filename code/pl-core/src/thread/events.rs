@@ -205,9 +205,11 @@ impl ModelProgressTracker {
                     self.emit_reasoning_part(
                         attempt_id,
                         generation,
-                        "aggregate:reasoning",
-                        "aggregate:reasoning",
-                        false,
+                        ReasoningPartTarget {
+                            baseline_key: "aggregate:reasoning",
+                            item_id: "aggregate:reasoning",
+                            is_summary: false,
+                        },
                         part,
                         bus,
                     );
@@ -227,9 +229,11 @@ impl ModelProgressTracker {
                         self.emit_reasoning_part(
                             attempt_id,
                             generation,
-                            &baseline_key,
-                            &item_id,
-                            is_summary,
+                            ReasoningPartTarget {
+                                baseline_key: &baseline_key,
+                                item_id: &item_id,
+                                is_summary,
+                            },
                             part,
                             bus,
                         );
@@ -305,12 +309,15 @@ impl ModelProgressTracker {
         &mut self,
         attempt_id: &str,
         generation: u32,
-        baseline_key: &str,
-        item_id: &str,
-        is_summary: bool,
+        target: ReasoningPartTarget<'_>,
         part: &ObservedPart,
         bus: &EventBus,
     ) {
+        let ReasoningPartTarget {
+            baseline_key,
+            item_id,
+            is_summary,
+        } = target;
         match self.active_reasoning.get(baseline_key) {
             None => {
                 if !part.is_empty() {
@@ -359,6 +366,12 @@ impl ModelProgressTracker {
     }
 }
 
+struct ReasoningPartTarget<'a> {
+    baseline_key: &'a str,
+    item_id: &'a str,
+    is_summary: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -401,12 +414,20 @@ mod tests {
         }))
         .appended("Step 1");
 
-        tracker.observe("att-1", &ModelProgress::new(1, vec![summary_1.clone(), raw_1.clone()]), &bus);
+        tracker.observe(
+            "att-1",
+            &ModelProgress::new(1, vec![summary_1.clone(), raw_1.clone()]),
+            &bus,
+        );
 
         let summary_2 = summary_1.appended("\n**Execute**");
         let raw_2 = raw_1.appended(" -> Step 2");
 
-        tracker.observe("att-1", &ModelProgress::new(2, vec![summary_2, raw_2]), &bus);
+        tracker.observe(
+            "att-1",
+            &ModelProgress::new(2, vec![summary_2, raw_2]),
+            &bus,
+        );
 
         let events = emitted.lock().unwrap();
         assert_eq!(events.len(), 4);

@@ -1,11 +1,11 @@
 //! Shared decoders and state mergers for `WorkGroupMember` items across `TimelineDataLayer`
 //! and `LiveStatusDataLayer`, ensuring live and cold timelines share one source of truth.
 
+use crate::ChatTerminalOutcome;
 use crate::history::{
     EventPayloadEnvelope, HistoryBodyManifestEntry, HistoryBodyRole, HistoryEntityKind,
     HistoryEntityState, HistoryEventKind, HistoryEventRecord, decode_event_envelope,
 };
-use crate::ChatTerminalOutcome;
 
 use super::models::{BodyRef, WorkGroupMember};
 

@@ -441,8 +441,9 @@ pub fn fold_work_group_members(events: Vec<HistoryEventRecord>) -> Vec<WorkGroup
     let mut folded: BTreeMap<String, WorkGroupMember> = BTreeMap::new();
 
     for record in events {
-        let member = decode_work_group_member(&record)
-            .unwrap_or_else(|| fallback_work_group_member(&record, "invalid or unhandled work member".into()));
+        let member = decode_work_group_member(&record).unwrap_or_else(|| {
+            fallback_work_group_member(&record, "invalid or unhandled work member".into())
+        });
         let key = member.id().to_owned();
         if let Some(existing) = folded.get_mut(&key) {
             merge_work_group_member(existing, member);

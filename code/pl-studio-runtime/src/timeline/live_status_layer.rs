@@ -224,9 +224,7 @@ impl State {
             }
             _ => None,
         };
-        self.reasoning_preview = self
-            .latest_active_reasoning_preview()
-            .or(completed_preview);
+        self.reasoning_preview = self.latest_active_reasoning_preview().or(completed_preview);
     }
 }
 
@@ -872,10 +870,7 @@ impl LiveStatusDataLayer {
                                 *started_at_ms = Some(now_ms);
                             }
                             let is_done = record.kind == HistoryEventKind::AgentCompleted
-                                || matches!(
-                                    status.as_str(),
-                                    "completed" | "failed" | "cancelled"
-                                );
+                                || matches!(status.as_str(), "completed" | "failed" | "cancelled");
                             if is_done && finished_at_ms.is_none() {
                                 *finished_at_ms = Some(now_ms);
                             }
