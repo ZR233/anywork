@@ -13,7 +13,7 @@ import 'package:anywork/src/features/conversation/timeline/state/timeline_feed_p
 import 'package:anywork/src/features/conversation/timeline/tools/support/tool_detail_panel.dart';
 import 'package:anywork/src/features/conversation/timeline/tools/support/tool_detail_values.dart';
 import 'package:anywork/src/features/conversation/timeline/tools/tool_item_view.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
+import 'package:anywork/src/features/conversation/timeline/work_group/work_group_member_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_content_range_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
@@ -213,9 +213,14 @@ void main() {
           .toList();
       if (matches.length != 1) return false;
       panel = matches.single;
-      waitItem = tester
-          .widget<ChatItemView>(observed.itemRow(panel.item.id))
-          .item;
+      final memberFinder = find.byWidgetPredicate(
+        (widget) =>
+            widget is WorkGroupMemberView && widget.member.id == panel.item.id,
+      );
+      if (memberFinder.evaluate().length != 1) return false;
+      waitItem = timelineFeedMember(
+        tester.widget<WorkGroupMemberView>(memberFinder).member,
+      );
       expect(waitItem.turnId, completed.turnId);
       expect(waitItem.toolCallId, historicalWait!.callId);
       return waitItem.compatibility == ChatItemCompatibility.current;
