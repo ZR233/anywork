@@ -134,12 +134,9 @@ async fn standalone_search_host_preserves_frozen_options_commands_and_payload() 
         .unwrap()
         .attach(ThreadWebSearchTool::new(client, options));
     let output = tool.execute(args(json!({"search_query":[{"q":"question"}],"find":[{"ref_id":"page","pattern":"text"}]})), context()).await.unwrap();
-    assert_eq!(output.payload().format(), "pl.tool.web-search");
-    assert_eq!(output.payload().version(), 1);
-    assert_eq!(
-        serde_json::from_str::<Value>(output.payload().content()).unwrap()["encrypted_output"],
-        "opaque"
-    );
+
+    assert_eq!(output.details().unwrap()["providerState"], "opaque");
+    assert!(output.data().unwrap().get("encrypted_output").is_none());
     let mut follow_up = context();
     follow_up.turn_id = "next-turn".into();
     follow_up.call_id = "open-call".into();
@@ -148,7 +145,7 @@ async fn standalone_search_host_preserves_frozen_options_commands_and_payload() 
         .await
         .unwrap();
     assert_eq!(
-        serde_json::from_str::<Value>(output.payload().content()).unwrap()["output"],
+        output.data().unwrap().clone()["output"],
         "opened search result"
     );
     let requests = server.state.0.lock().unwrap().clone();
@@ -277,8 +274,8 @@ async fn deepseek_hosts_keep_real_client_wire_sources_and_observed_failures() {
         .execute(args(json!({"queries":["question","question"]})), context())
         .await
         .unwrap();
-    assert_eq!(output.payload().format(), "pl.tool.deepseek-web-search");
-    let value: Value = serde_json::from_str(output.payload().content()).unwrap();
+
+    let value: Value = output.data().unwrap().clone();
     assert_eq!(value["queries"], json!(["question"]));
     assert_eq!(
         value["responses"][0]["sources"][0]["publishedAt"],
@@ -322,12 +319,14 @@ async fn deepseek_hosts_keep_real_client_wire_sources_and_observed_failures() {
         error.source.downcast_ref::<ToolsError>(),
         Some(ToolsError::HttpStatus { status: 502, .. })
     ));
+    assert_eq!(
+        deliveries[0].output.details().unwrap()["rawResponses"][0]["observation"],
+        "retained"
+    );
     assert!(
-        deliveries[0]
-            .output
-            .payload()
-            .content()
-            .contains("retained")
+        deliveries[0].output.data().unwrap()["responses"][0]
+            .get("rawResponse")
+            .is_none()
     );
     thread.close().await.unwrap();
     let fetch = prepare_native_tool()
@@ -337,11 +336,8 @@ async fn deepseek_hosts_keep_real_client_wire_sources_and_observed_failures() {
         .execute(args(json!({"url":"https://example.org/"})), context())
         .await
         .unwrap();
-    assert_eq!(output.payload().format(), "pl.tool.deepseek-web-fetch");
-    assert_eq!(
-        serde_json::from_str::<Value>(output.payload().content()).unwrap()["content"],
-        "fetched body"
-    );
+
+    assert_eq!(output.data().unwrap().clone()["content"], "fetched body");
     let requests = server.state.0.lock().unwrap().clone();
     assert_eq!(requests.len(), 3);
     assert_eq!(

@@ -58,7 +58,7 @@ async fn eight_independent_tools_execute_a_real_repository_lifecycle() {
         .execute(r#"{"message":"initial"}"#.into(), ())
         .await
         .unwrap();
-    assert_eq!(first.payload()["status"], 0);
+    assert_eq!(first.data()["status"], 0);
     let initial = git(&repo.worktree, &["rev-parse", "HEAD"]);
 
     let status =
@@ -139,7 +139,7 @@ async fn eight_independent_tools_execute_a_real_repository_lifecycle() {
     let fetch =
         pl_tool_git::fetch::GitFetch::new(network(&config), pl_tool_git::fetch::definition());
     assert_eq!(
-        fetch.execute("{}".into(), ()).await.unwrap().payload()["status"],
+        fetch.execute("{}".into(), ()).await.unwrap().data()["status"],
         0
     );
     let info = pl_tool_git::workspace_info::GitWorkspaceInfo::new(
@@ -147,11 +147,11 @@ async fn eight_independent_tools_execute_a_real_repository_lifecycle() {
         pl_tool_git::workspace_info::definition(),
     );
     assert_eq!(
-        info.execute("{}".into(), ()).await.unwrap().payload(),
+        info.execute("{}".into(), ()).await.unwrap().data(),
         &json!({
             "clone": repo.worktree,
             "worktree": repo.worktree,
-            "label": "independent",
+            "metadata": {"label": "independent"},
         })
     );
 
@@ -168,7 +168,7 @@ async fn eight_independent_tools_execute_a_real_repository_lifecycle() {
         .await
         .unwrap();
     assert_eq!(
-        result.payload(),
+        result.data(),
         &json!({
             "clone": repo.worktree,
             "worktree": repo.worktree,
@@ -401,9 +401,9 @@ async fn provider_credentials_redact_success_and_failure_and_always_remove_askpa
                 error.observed().unwrap()
             }
         };
-        assert_eq!(output.payload()["status"], status);
-        assert_eq!(output.payload()["stdout"], "stdout [redacted]");
-        assert_eq!(output.payload()["stderr"], "stderr [redacted]");
+        assert_eq!(output.data()["status"], status);
+        assert_eq!(output.data()["stdout"], "stdout [redacted]");
+        assert_eq!(output.data()["stderr"], "stderr [redacted]");
         assert_eq!(result.is_ok(), status == 0);
         assert_eq!(
             *provider.0.lock().unwrap(),
@@ -583,11 +583,8 @@ async fn sync_failure_keeps_prior_side_effect_observations_without_automatic_ret
     assert!(completed[1].stdout().contains("Saved working directory"));
     assert!(matches!(source.as_ref(), GitError::Command { .. }));
     let observed = error.observed().unwrap();
-    assert_ne!(observed.payload()["status"], 0);
-    assert_eq!(
-        observed.payload()["observations"].as_array().unwrap().len(),
-        4
-    );
+    assert_ne!(observed.data()["status"], 0);
+    assert_eq!(observed.data()["observations"].as_array().unwrap().len(), 4);
     assert_eq!(git(&repo.worktree, &["stash", "list"]).lines().count(), 1);
     assert!(!repo.worktree.join("local-note").exists());
     assert!(

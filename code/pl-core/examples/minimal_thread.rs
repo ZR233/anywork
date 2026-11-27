@@ -71,7 +71,10 @@ impl pl_agent_tool::Tool for Echo {
         let context = vec![ContextContent::Text {
             text: Arc::from(input.content()),
         }];
-        Ok(ToolOutput::new(input, context))
+        Ok(ToolOutput::from_data(
+            serde_json::Value::String(input.content().to_owned()),
+            context,
+        ))
     }
 }
 

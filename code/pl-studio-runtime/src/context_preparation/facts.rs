@@ -20,6 +20,7 @@ pub(super) fn append_preview_facts(
             .is_some_and(|record| record.content == fact.content)
         {
             records.push(ContextRecord {
+                tool_data: Default::default(),
                 id: format!("preview:{sequence}:{}", fact.source_id),
                 turn_id: None,
                 source,

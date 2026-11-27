@@ -10,7 +10,9 @@ use utoipa::ToSchema;
 static NEXT_CORRELATION_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Stable Studio API error categories shared by FRB and HTTP.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ToSchema, schemars::JsonSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum StudioErrorCode {
     NotInitialized,
@@ -123,7 +125,16 @@ impl StudioErrorReason {
 }
 
 /// A redacted API error. Internal diagnostics are correlated through `correlation_id` only.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, thiserror::Error, ToSchema)]
+#[derive(
+    Debug,
+    Clone,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    thiserror::Error,
+    ToSchema,
+    schemars::JsonSchema,
+)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[error("{message} (correlation id: {correlation_id})")]
 pub struct StudioError {

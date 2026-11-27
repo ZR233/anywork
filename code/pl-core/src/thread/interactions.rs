@@ -292,6 +292,7 @@ fn stage_terminal_context(
             source_id: format!("interaction:{id}"),
         },
         content,
+        tool_data: Default::default(),
         tool_calls: Vec::new(),
     });
     let context = ContextSnapshot {

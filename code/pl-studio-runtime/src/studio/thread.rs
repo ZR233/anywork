@@ -49,7 +49,7 @@ pub const PROMPT: &str = r#"# Auto 自动模式
   - **中途升级与冲突回退**：在 `simple`、`editing_documents`、`working`、`integrating`、`reviewing` 任一阶段，一旦发现范围/风险超出预期、用户要求出计划，或**发现实现方法与已有设计冲突**，禁止以代码暗中覆盖设计；必须立即暂停受影响修改、保留现场并切入或退回 `planning`。
 
 ## 2. 计划阶段规则：先切阶段，再问冲突，再调 `plan_transition` 出 ELI5 计划
-- 每个智能体各自持有独立 `Plan` 对象：`plan_transition` 与 `request_user_input` 为**顶层独占工具**（调用时必须独占一次模型响应，严禁与 `exec` 或其他工具同批调用）；`workflow_*` 与 `plan_current` / `plan_next` / `plan_history` 在 Native 模式下通过 `exec` 的 `tools.*`（如 `tools.workflow_transition(args)`、`tools.plan_current({})`——注意其返回 JSON 文本，直接打印或先 `json.decode` 再读 `document.content`）调用，在 ACP/MCP 模式下按对应顶层工具调用。简单路径下无需强制创建计划；**但只要需求属于规划路径或触发冲突升级，必须严格按以下顺序执行**：
+- 每个智能体各自持有独立 `Plan` 对象：`plan_transition` 与 `request_user_input` 为**顶层独占工具**（调用时必须独占一次模型响应，严禁与 `exec` 或其他工具同批调用）；`workflow_*` 与 `plan_current` / `plan_next` / `plan_history` 在 Native 模式下通过 `exec` 的 `tools.*`（如 `tools.workflow_transition(args)`、`tools.plan_current({})`——返回普通程序值，可直接 return 或读取 `document.content`）调用，在 ACP/MCP 模式下按对应顶层工具调用。简单路径下无需强制创建计划；**但只要需求属于规划路径或触发冲突升级，必须严格按以下顺序执行**：
   1. **必须先切入 `planning` 阶段**：`plan_transition` 提交确认和 `request_user_input` 提问都会**立即挂起当前轮次等待用户回答**。因此，若当前工作流还在 `triage`（或 `simple` / `working` / `integrating` / `reviewing`），**必须先单独调用一次 `exec` 执行 `return tools.workflow_transition(args)` 把工作流切换至 `planning`**；**严禁**在工作流仍处于 `triage` 等非 `planning` 阶段时提前调用 `request_user_input` 或 `plan_transition`！
   2. **冲突先询问**：进入 `planning` 后，若用户要求或实现方法与已有设计冲突，或存在影响方向的未决取舍，先调用 `request_user_input` 用通俗大白话说明“原设计怎么规定 → 冲突在哪里 → 可选方案与利弊 → 推荐做法”，等待用户决定后再定稿（若用户已在需求中明确方向且无歧义，勿反问“要不要出计划”）。
   3. **必须调用 `plan_transition` 提交确认**：进入 `planning` 且方向明确后，**必须**独占调用 `plan_transition(targetState: "awaitingConfirmation", content: "<完整 Markdown 计划>")` 且保持默认 `force=false` 以向用户发起确认卡片（非交互环境或用户显式声明免确认时才可跳过等待）。**禁止**只在普通正文或 `<proposed_plan>` 标签里写计划而不调 `plan_transition`，**禁止**在提请确认时传入 `force=true`（这会跳过确认交互）。若当前 Plan 已处于 `approved`（例如设计冲突回退重规划），须先调用 `plan_transition(targetState: "drafting")`，再切入 `awaitingConfirmation`。
@@ -126,7 +126,7 @@ const STATES: &[StaticWorkflowState] = &[
     StaticWorkflowState {
         id: "reviewing",
         title: "复核验收",
-        instructions: "进入本阶段后先读取当前最新 Plan 正文（核对宿主 `studio.plan.document` / `pl.plan` 投影中的 `markdown` 正文，若投影缺失、无正文或不确定是否最新，先通过 `exec` 调用 `tools.plan_current({})`——返回 JSON 文本，直接打印或用 `json.decode` 读取 `document.content`——或按顶层声明调用 `plan_current` 读取）。根据 Plan 的目标、非目标边界、冲突裁定、风险点与验收标准制定审查清单，据此安排审查：委派 `reviewer` 时，除完整适用 Plan（及调整）外，须明确交代依据 Plan 定制的审查方法、重点核查条目/路径/契约与文档一致性、非目标范围及通过/打回判据；无绑定执行者由主代理直接复核时，同样逐项对照 Plan 与真实代码差异及验证输出。补足尚缺门禁、完成适用子智能体评价并核对资源/临时进程回收。实现未满足 Plan 回退 `working`，文档偏差回退 `editing_documents`，发现设计冲突或根本方案缺陷回退 `planning`（询问并重出计划）；确认无误后进入 `completed`。",
+        instructions: "进入本阶段后先读取当前最新 Plan 正文（核对宿主 `studio.plan.document` / `pl.plan` 投影中的 `markdown` 正文，若投影缺失、无正文或不确定是否最新，先通过 `exec` 调用 `tools.plan_current({})`——返回普通程序值，可直接 return 或读取 `document.content`——或按顶层声明调用 `plan_current` 读取）。根据 Plan 的目标、非目标边界、冲突裁定、风险点与验收标准制定审查清单，据此安排审查：委派 `reviewer` 时，除完整适用 Plan（及调整）外，须明确交代依据 Plan 定制的审查方法、重点核查条目/路径/契约与文档一致性、非目标范围及通过/打回判据；无绑定执行者由主代理直接复核时，同样逐项对照 Plan 与真实代码差异及验证输出。补足尚缺门禁、完成适用子智能体评价并核对资源/临时进程回收。实现未满足 Plan 回退 `working`，文档偏差回退 `editing_documents`，发现设计冲突或根本方案缺陷回退 `planning`（询问并重出计划）；确认无误后进入 `completed`。",
         completion_criteria: &[
             "已读取最新 Plan（`studio.plan.document` / `pl.plan` / `plan_current`）并据此完成或指导 `reviewer` 完成逐项对照审查。",
             "逐项满足 Plan 与用户目标，关键门禁与验证均有真实结果，适用评价及资源/进程回收已完成。",
@@ -364,7 +364,7 @@ mod tests {
                     2,
                 )
                 .unwrap();
-            assert!(res.accepted, "expected {from} -> {to} to succeed");
+            assert!(res.accepted(), "expected {from} -> {to} to succeed");
         };
 
         // Path A: triage -> simple -> completed

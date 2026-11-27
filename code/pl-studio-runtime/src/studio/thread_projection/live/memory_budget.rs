@@ -144,7 +144,9 @@ pub(in crate::studio::thread_projection) fn tool_bytes(tool: &ThreadToolItem) ->
             bytes = bytes.saturating_add(state.streamed_output().len() as u64);
         }
         ThreadToolState::Interrupted(state) => {
-            bytes = bytes.saturating_add(state.reason().len() as u64);
+            bytes = bytes
+                .saturating_add(state.reason().len() as u64)
+                .saturating_add(state.output().map_or(0, tool_output_bytes));
         }
         ThreadToolState::Running(state) => {
             bytes = bytes.saturating_add(state.streamed_output().len() as u64);
@@ -161,7 +163,9 @@ pub(in crate::studio::thread_projection) fn tool_bytes(tool: &ThreadToolItem) ->
             bytes = bytes.saturating_add(state.reason().len() as u64);
         }
         ThreadToolState::Cancelled(state) => {
-            bytes = bytes.saturating_add(state.reason().len() as u64);
+            bytes = bytes
+                .saturating_add(state.reason().len() as u64)
+                .saturating_add(state.output().map_or(0, tool_output_bytes));
         }
     }
     if let Some(user_input) = tool.user_input() {

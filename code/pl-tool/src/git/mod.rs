@@ -204,8 +204,8 @@ where
 }
 
 fn dynamic_output(outcome: &GitOutput) -> Result<ToolOutput, ToolError> {
-    use pl_core::context::{ContextContent, OpaquePayload};
-    let description = outcome.payload().to_string();
+    use pl_core::context::ContextContent;
+    let description = outcome.data().to_string();
     let preview = pl_output::bounded_text(&description, 12 * 1024, 0);
     let context = if preview.truncated {
         format!(
@@ -215,8 +215,8 @@ fn dynamic_output(outcome: &GitOutput) -> Result<ToolOutput, ToolError> {
     } else {
         preview.text
     };
-    Ok(ToolOutput::new(
-        OpaquePayload::new("pl.tool.git", 1, description).map_err(ToolError::new)?,
+    Ok(ToolOutput::from_data(
+        outcome.data().clone(),
         vec![ContextContent::Text {
             text: Arc::from(context),
         }],

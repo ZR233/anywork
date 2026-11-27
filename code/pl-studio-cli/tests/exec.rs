@@ -89,6 +89,65 @@ impl Environment {
             .kill_on_drop(true);
         command
     }
+
+    #[cfg(target_os = "linux")]
+    fn configure_acp_peer(&self) -> Result<()> {
+        use pl_studio_runtime::config::{AcpLaunch, AcpServiceDefinition};
+        use std::collections::BTreeMap;
+
+        let root = self.temporary.path();
+        let peer = root.join("peer.py");
+        std::fs::write(root.join("mode"), "config")?;
+        std::fs::write(
+            &peer,
+            include_str!("../../pl-studio-runtime/tests/support/acp_business_peer.py"),
+        )?;
+        let definition = AcpServiceDefinition {
+            id: "business-peer".into(),
+            display_name: "Fixture peer".into(),
+            enabled: true,
+            launch: AcpLaunch::Command {
+                command: "/usr/bin/python3".into(),
+                args: vec![peer.to_str().context("peer path")?.into()],
+            },
+            env: BTreeMap::from([(
+                "ACP_FIXTURE_ROOT".into(),
+                root.to_str().context("fixture root")?.into(),
+            )]),
+        };
+        std::fs::create_dir_all(self.home.join("acp"))?;
+        std::fs::write(
+            self.home.join("acp/business-peer.toml"),
+            definition.encode()?,
+        )?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn acp_command(&self, subcommand: &str) -> tokio::process::Command {
+        let root = self.temporary.path();
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_anywk"));
+        command
+            .current_dir(root)
+            .args([
+                subcommand,
+                "--studio-home",
+                "profile",
+                "--cwd",
+                "task",
+                "--account",
+                "business-peer",
+            ])
+            .env("HOME", root)
+            .env("XDG_CONFIG_HOME", root.join("xdg-config"))
+            // Model requests may reach the loopback fixture. Package checks stay offline.
+            .env("HTTPS_PROXY", "http://127.0.0.1:0")
+            .env("https_proxy", "http://127.0.0.1:0")
+            .env("NO_PROXY", "127.0.0.1")
+            .env("no_proxy", "127.0.0.1")
+            .kill_on_drop(true);
+        command
+    }
 }
 
 fn native_tool(name: &str, call: &str, arguments: serde_json::Value) -> Reply {
@@ -394,6 +453,12 @@ async fn environment_credentials_follow_native_protocol_requirements_without_key
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
+    let diagnostic = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        diagnostic.contains("Studio startup step prepare_configuration failed"),
+        "{diagnostic}"
+    );
+    assert!(result.stdout.is_empty());
     assert!(server.recorded().is_empty());
     let result = output(
         environment
@@ -413,6 +478,250 @@ async fn environment_credentials_follow_native_protocol_requirements_without_key
     );
     assert!(!String::from_utf8(result.stderr)?.contains("synthetic-secret-value"));
     assert_eq!(std::fs::read(environment.home.join("config.toml"))?, before);
+    server.finish().await?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn acp_cli_uses_the_peer_with_missing_native_credentials() -> Result<()> {
+    use pl_provider_fixture::{FixtureOptions, ModelCatalogControl};
+
+    let server = FixtureServer::start_with_options(
+        Vec::new(),
+        FixtureOptions {
+            model_catalog: Some(ModelCatalogControl::named("empty")?),
+            ..FixtureOptions::default()
+        },
+    )
+    .await?;
+    // The compatible account is eligible for a real /models request without a key.
+    let environment = Environment::new(&format!("{}/openai", server.base_url()))?;
+    let store = ConfigStore::new(ConfigPaths::from_config_dir(&environment.home));
+    let mut config = store.load()?;
+    let mut native = AccountConfig::from_explicit_models(
+        pl_model::protocol::providers::deepseek::endpoint(Some(server.base_url())),
+        vec![ModelDefinition::compatible(MODEL)],
+    );
+    const MISSING_TOKEN: &str = "ANYWK_REQUIRED_ACP_TEST_TOKEN";
+    native.bearer_token_env = Some(MISSING_TOKEN.into());
+    let native_id = AccountId::new("required-native")?;
+    config.models.accounts.insert(native_id.clone(), native);
+    for route in config.mode_model_routes.values_mut() {
+        route.account_id = native_id.clone();
+    }
+    store.save(&config)?;
+    let canonical = std::fs::read_to_string(store.paths().config_file())?;
+
+    let root = environment.temporary.path();
+    let mode = root.join("mode");
+    environment.configure_acp_peer()?;
+    let command = |subcommand: &str| {
+        let mut command = environment.acp_command(subcommand);
+        command.env_remove(MISSING_TOKEN);
+        command
+    };
+
+    let calls = root.join("calls");
+    let discovered = output(&mut command("acp-options")).await?;
+    ensure!(
+        discovered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&discovered.stderr)
+    );
+    let options: serde_json::Value = serde_json::from_slice(&discovered.stdout)?;
+    assert_eq!(options["configOptions"][0]["id"], "format");
+    assert!(
+        !std::fs::read_to_string(&calls)?
+            .lines()
+            .any(|method| method == "session/prompt")
+    );
+
+    let executed = output(command("exec-acp").args([
+        "--prompt-file",
+        "prompt.txt",
+        "--config",
+        "format=json",
+        "--no-default-user-skills",
+    ]))
+    .await?;
+    ensure!(
+        executed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&executed.stderr)
+    );
+    assert_eq!(String::from_utf8(executed.stdout)?, "actual answer\n");
+    let methods = std::fs::read_to_string(&calls)?;
+    assert!(
+        methods
+            .lines()
+            .any(|method| method == "session/set_config_option")
+    );
+    assert_eq!(
+        methods
+            .lines()
+            .filter(|method| *method == "session/prompt")
+            .count(),
+        1
+    );
+
+    assert_eq!(
+        std::fs::read_to_string(store.paths().config_file())?,
+        canonical
+    );
+    let invalid = canonical.replace(
+        "account_id = \"required-native\"",
+        "account_id = \"missing-native\"",
+    );
+    assert_ne!(invalid, canonical);
+    std::fs::write(store.paths().config_file(), invalid)?;
+    let invalid = output(&mut command("acp-options")).await?;
+    let diagnostic = String::from_utf8_lossy(&invalid.stderr);
+    assert_eq!(invalid.status.code(), Some(2), "{diagnostic}");
+    assert!(
+        diagnostic.contains("model route references missing account: missing-native"),
+        "{diagnostic}"
+    );
+    assert_eq!(std::fs::read_to_string(&calls)?, methods);
+
+    std::fs::write(store.paths().config_file(), canonical)?;
+    std::fs::write(mode, "auth")?;
+    let auth = output(&mut command("acp-options")).await?;
+    let diagnostic = String::from_utf8_lossy(&auth.stderr);
+    assert_eq!(auth.status.code(), Some(10), "{diagnostic}");
+    assert!(auth.stdout.is_empty());
+    assert!(
+        diagnostic.contains("Authentication required"),
+        "{diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("Use the official server login"),
+        "{diagnostic}"
+    );
+
+    let catalogs = server.model_catalog_hits();
+    assert!(catalogs.requests.is_empty(), "{catalogs:?}");
+    assert!(server.recorded().is_empty());
+    server.finish().await?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn acp_cli_opens_when_native_discovery_cache_requires_removed_authentication() -> Result<()> {
+    use pl_model::protocol::discovery::ModelCatalogQuery;
+    use pl_provider_fixture::{FixtureOptions, ModelCatalogControl};
+    use pl_studio_runtime::{
+        StudioHostKind, StudioModelCatalogSource, StudioProductTopic, StudioRuntime,
+        StudioRuntimeOptions,
+    };
+
+    const DISCOVERED_MODEL: &str = "fixture-model-old";
+    let server = FixtureServer::start_with_options(
+        Vec::new(),
+        FixtureOptions {
+            model_catalog: Some(ModelCatalogControl::named("a")?),
+            ..FixtureOptions::default()
+        },
+    )
+    .await?;
+    let environment = Environment::new(&format!("{}/openai-second", server.base_url()))?;
+    let store = ConfigStore::new(ConfigPaths::from_config_dir(&environment.home));
+    let mut config = store.load()?;
+    let discovery_id = AccountId::new("discovery")?;
+    let mut discovery = AccountConfig::from_explicit_models(
+        pl_model::protocol::providers::openai::compatible_endpoint(
+            "Discovery fixture",
+            format!("{}/openai", server.base_url()),
+        ),
+        Vec::new(),
+    );
+    // This credential is confined to the loopback provider and the temporary profile.
+    discovery.http_headers = Some(std::collections::HashMap::from([(
+        "Authorization".into(),
+        "Bearer fixture-discovery-credential".into(),
+    )]));
+    let authenticated = ModelCatalogQuery::for_account(&discovery)?;
+    config
+        .models
+        .accounts
+        .insert(discovery_id.clone(), discovery.clone());
+    store.save(&config)?;
+
+    let runtime = StudioRuntime::initialize(StudioRuntimeOptions {
+        studio_home: Some(environment.home.clone()),
+        host: StudioHostKind::Test,
+        ..StudioRuntimeOptions::desktop()
+    })
+    .await?;
+    let seeded = tokio::time::timeout(Duration::from_secs(15), async {
+        let mut updates = runtime
+            .subscribe_product_topic(StudioProductTopic::ModelCatalog)
+            .await?;
+        loop {
+            let snapshot = runtime.read_settings()?;
+            let account = snapshot
+                .catalog
+                .accounts
+                .iter()
+                .find(|item| item.account_id == "discovery")
+                .context("discovery fixture account missing")?;
+            for catalog in &snapshot.catalog.accounts {
+                if let Some(error) = &catalog.model_catalog.error {
+                    anyhow::bail!("{} discovery fixture failed: {error:?}", catalog.account_id);
+                }
+            }
+            if snapshot
+                .catalog
+                .accounts
+                .iter()
+                .all(|catalog| catalog.model_catalog.source == StudioModelCatalogSource::Online)
+            {
+                ensure!(
+                    account
+                        .effective_models
+                        .iter()
+                        .any(|item| item.model_id == DISCOVERED_MODEL)
+                );
+                return Ok::<_, anyhow::Error>(());
+            }
+            updates
+                .recv()
+                .await?
+                .context("model catalog observation ended")?;
+        }
+    })
+    .await;
+    runtime.shutdown_runtime().await?;
+    seeded??;
+    let before = server.model_catalog_hits();
+    assert_eq!(before.openai.hits, 1, "{before:?}");
+    assert_eq!(before.openai_second.hits, 1, "{before:?}");
+
+    discovery.http_headers = None;
+    let unauthenticated = ModelCatalogQuery::for_account(&discovery)?;
+    assert_ne!(authenticated.identity(), unauthenticated.identity());
+    config
+        .models
+        .accounts
+        .insert(discovery_id.clone(), discovery);
+    for route in config.mode_model_routes.values_mut() {
+        route.account_id = discovery_id.clone();
+        route.model_id = DISCOVERED_MODEL.into();
+    }
+    store.save(&config)?;
+    environment.configure_acp_peer()?;
+
+    let result = output(&mut environment.acp_command("acp-options")).await?;
+    ensure!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let options: serde_json::Value = serde_json::from_slice(&result.stdout)?;
+    assert_eq!(options["configOptions"][0]["id"], "format");
+    assert_eq!(server.model_catalog_hits(), before);
+    assert!(server.recorded().is_empty());
     server.finish().await?;
     Ok(())
 }

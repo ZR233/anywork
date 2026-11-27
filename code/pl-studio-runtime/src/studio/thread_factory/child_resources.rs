@@ -333,6 +333,7 @@ impl StudioThreadFactory {
             })
             .await?;
         initial_context.push(ContextRecord {
+            tool_data: Default::default(),
             id: format!("workspace:{}", request.id),
             turn_id: None,
             source: ContextSource::RuntimeFact {

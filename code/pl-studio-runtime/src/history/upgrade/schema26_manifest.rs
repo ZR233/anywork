@@ -21,7 +21,7 @@ pub(super) const TOOL_TASK_KEY: &str = "native.tool-task.v1";
 const MANIFEST_REVISION: i64 = 1;
 const CURRENT_REVISION: i64 = 2;
 
-const RESTORE_EVENT_UPDATE_TRIGGER: &str = "\
+pub(super) const RESTORE_EVENT_UPDATE_TRIGGER: &str = "\
 CREATE TRIGGER history_events_no_update
 BEFORE UPDATE ON history_events BEGIN
     SELECT RAISE(ABORT, 'history events are append-only');
@@ -63,7 +63,7 @@ pub(super) fn rewrite_payload(
 }
 
 pub(in crate::history) async fn repair_needed(db: &impl ConnectionTrait) -> Result<bool> {
-    Ok(revision(db).await? != CURRENT_REVISION)
+    Ok(revision(db).await? < CURRENT_REVISION)
 }
 
 pub(in crate::history) async fn require_current(db: &impl ConnectionTrait) -> Result<()> {
@@ -75,14 +75,14 @@ pub(in crate::history) async fn require_current(db: &impl ConnectionTrait) -> Re
     Ok(())
 }
 
-async fn revision(db: &impl ConnectionTrait) -> Result<i64> {
+pub(super) async fn revision(db: &impl ConnectionTrait) -> Result<i64> {
     let row = db
         .query_one_raw(statement("PRAGMA user_version", vec![]))
         .await?
         .ok_or_else(|| HistoryError::Integrity("history maintenance revision is missing".into()))?;
     let version: i64 = row.try_get("", "user_version")?;
     match version {
-        0 | MANIFEST_REVISION | CURRENT_REVISION => Ok(version),
+        0 | MANIFEST_REVISION | CURRENT_REVISION | super::tool_results::REVISION => Ok(version),
         _ => Err(HistoryError::Integrity(format!(
             "unsupported history maintenance revision {version}"
         ))),
@@ -110,7 +110,7 @@ pub(super) async fn repair(
         .await?;
     require_schema26(&tx).await?;
     let revision = revision(&tx).await?;
-    if revision == CURRENT_REVISION {
+    if revision >= CURRENT_REVISION {
         return Err(HistoryError::Conflict(
             "history maintenance revision already changed".into(),
         ));
@@ -494,7 +494,7 @@ mod tests {
                 assert_eq!(turn, serde_json::from_value::<crate::Turn>(expected)?);
             }
             let db = schema::connect(&path, true, false).await?;
-            assert_eq!(revision(&db).await?, 2);
+            assert_eq!(revision(&db).await?, super::super::tool_results::REVISION);
             assert_eq!(database_id(&db).await?, original_database_id);
             db.close().await?;
             let operations = std::fs::read_dir(backups)?.collect::<std::io::Result<Vec<_>>>()?;
@@ -688,7 +688,7 @@ mod tests {
         reader.close().await;
 
         let db = super::super::super::schema::connect(&path, true, false).await?;
-        assert_eq!(revision(&db).await?, CURRENT_REVISION);
+        assert_eq!(revision(&db).await?, super::super::tool_results::REVISION);
         let original_chunks = db
             .query_all_raw(statement(
                 "SELECT data FROM history_body_chunks WHERE body_id='old-body' ORDER BY chunk_no",
@@ -1102,7 +1102,19 @@ mod tests {
 
         let tool = payload_json(&db, "tool-1").await?;
         let tool: serde_json::Value = serde_json::from_str(&tool)?;
-        assert_eq!(tool["bodies"][0]["reference"]["bodyId"], "body-task");
+        assert_eq!(
+            tool["bodies"][0]["key"],
+            crate::studio::storage::tool_task::BODY_KEY
+        );
+        assert_ne!(tool["bodies"][0]["reference"]["bodyId"], "body-task");
+        assert!(
+            db.query_one_raw(statement(
+                "SELECT 1 FROM history_bodies WHERE body_id='body-task' AND body_key=?",
+                vec![TOOL_TASK_KEY.into()],
+            ))
+            .await?
+            .is_some()
+        );
         assert_eq!(tool["type"], "tool");
 
         let chat = payload_json(&db, "chat-1").await?;
@@ -1186,22 +1198,22 @@ mod tests {
             b"{}",
         )
         .await?;
-        insert_event(
-            db,
-            2,
-            "tool-1",
-            None,
-            r#"{"contract":"anywork.event/1","type":"tool"}"#,
-            "anywork.event/1",
-        )
-        .await?;
+        db.execute_unprepared("INSERT INTO history_events(seq,event_id,kind,timeline_role,recorded_at,call_id,payload_schema,payload_json) \
+            VALUES(2,'tool-1','tool_completed',0,1,'legacy-call','anywork.event/1','{\"contract\":\"anywork.event/1\",\"type\":\"tool\"}')").await?;
+        let receipt = super::super::tool_results::tests::old_receipt(
+            "legacy-call",
+            "tool",
+            &json!({
+                "format":"text/plain", "version": 1, "content":"old original",
+            }),
+        );
         insert_body(
             db,
             "body-task",
             "tool-1",
             TOOL_TASK_KEY,
             "native_tool_task",
-            b"task",
+            &receipt,
         )
         .await?;
         insert_event(

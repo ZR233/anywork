@@ -2,10 +2,17 @@
 struct Host;
 impl lua::ToolHost for Host {
     fn bindings(&self) -> Vec<lua::Binding> {
-        vec![lua::Binding { name: "echo".into(), parallel: true }]
+        vec![lua::Binding {
+            name: "echo".into(),
+            parallel: true,
+        }]
     }
-    async fn call(&self, _name: String, arguments: serde_json::Value) -> Result<serde_json::Value, lua::CallFailure> {
-        Ok(arguments)
+    async fn call(
+        &self,
+        _name: String,
+        arguments: serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, lua::CallFailure> {
+        Ok(Some(arguments))
     }
 }
 

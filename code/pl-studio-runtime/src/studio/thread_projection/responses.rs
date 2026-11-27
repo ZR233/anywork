@@ -269,7 +269,9 @@ fn project_opaque_attempt(
                         version: 1,
                         content: text.to_string(),
                     },
-                    ContextContent::Opaque { payload } => super::raw_payload(payload),
+                    ContextContent::Opaque { payload } | ContextContent::Media { payload } => {
+                        super::raw_payload(payload)
+                    }
                     ContextContent::Resource { reference } => crate::ThreadRawPayload {
                         format: "pl.resource-reference".into(),
                         version: 1,
@@ -1041,7 +1043,7 @@ fn response_content(output: &ModelStepOutput) -> Result<ResponseContent, Project
             ContextContent::Text { .. } => {}
             ContextContent::Opaque { payload }
                 if receipt.is_some() && payload.format() == "pl.model.assistant" => {}
-            ContextContent::Opaque { payload } => {
+            ContextContent::Opaque { payload } | ContextContent::Media { payload } => {
                 return Err(ProjectionError::UnsupportedOutput(format!(
                     "{} version {}",
                     payload.format(),

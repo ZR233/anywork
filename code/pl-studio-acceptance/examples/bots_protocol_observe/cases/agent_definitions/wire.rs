@@ -9,7 +9,10 @@ use pl_provider_fixture::{
 use pl_studio_runtime::AgentProfileSnapshot;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -169,10 +172,10 @@ pub(super) fn tool<'a>(body: &'a Value, name: &str) -> Result<Option<&'a Value>>
 
 pub(super) fn catalog(body: &Value, phase: AgentPhase) -> Result<Catalog> {
     let output = output(body, &phase.action_call())?;
-    serde_json::from_str(output).context("decode real list_agent_profiles result")
+    serde_json::from_str(&output).context("decode real list_agent_profiles result")
 }
 
-pub(super) fn output<'a>(body: &'a Value, call: &str) -> Result<&'a str> {
+pub(super) fn output<'a>(body: &'a Value, call: &str) -> Result<Cow<'a, str>> {
     let found = body
         .get("input")
         .and_then(Value::as_array)
@@ -186,7 +189,7 @@ pub(super) fn output<'a>(body: &'a Value, call: &str) -> Result<&'a str> {
     ensure!(found.len() == 1, "real output for {call} absent/duplicated");
     found[0]
         .get("output")
-        .and_then(Value::as_str)
+        .and_then(pl_provider_fixture::responses_output_text)
         .context("tool result was not text")
 }
 

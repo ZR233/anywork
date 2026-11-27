@@ -1,12 +1,9 @@
 //! Session-scoped tools whose instances and cancellation follow their owning Thread.
 use crate::tool_error;
 
-use pl_core::{
-    context::{ContextContent, OpaquePayload},
-    tool::{
-        ToolOutput,
-        opaque::{CallContext, ToolError},
-    },
+use pl_core::tool::{
+    ToolOutput,
+    opaque::{CallContext, ToolError},
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -55,12 +52,7 @@ impl pl_agent_tool::typed::TypedTool for SleepTool {
             }
             _ = tokio::time::sleep(Duration::from_millis(input.duration_ms)) => {},
         }
-        Ok(ToolOutput::new(
-            OpaquePayload::text("Timer elapsed."),
-            vec![ContextContent::Text {
-                text: "Timer elapsed.".into(),
-            }],
-        ))
+        Ok(ToolOutput::text("Timer elapsed.".into()))
     }
 }
 
@@ -71,6 +63,8 @@ pub fn sleep_tool_definition() -> pl_agent_tool::ToolDefinition {
         pl_agent_tool::typed::input_schema_for::<SleepInput>(),
     )
     .expect("static tool definition")
+    .with_output_schema(crate::binding::program_schema::<String>())
+    .expect("static timer data schema")
 }
 
 const SLEEP_TOOL_NAME: &str = "sleep";

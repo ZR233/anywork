@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use axum::{Router, body::Body, middleware::Next, response::Response};
 use http::{Request, StatusCode, header::AUTHORIZATION};
 use pl_acp::session::{AllowOnceForTool, PermissionToolCall, PrepareOpen, schema};
-use pl_agent_tool::ToolDefinition;
+use pl_agent_tool::{ToolData, ToolDefinition, ToolResult};
 use pl_studio_mcp::{
     HostCatalog, HostContent, HostError, HostInvocation, HostMcpService, HostResult, HostTool,
     HostTools, ipc::IpcServer,
@@ -554,8 +554,10 @@ pub(super) fn prepare_binding(
     tools: &BTreeMap<String, HostBinding>,
     definition: &ToolDefinition,
     input: pl_studio_mcp::JsonInput,
+    publish_output_schema: bool,
 ) -> Result<pl_studio_mcp::ToolProjection> {
-    let projection = pl_studio_mcp::ToolProjection::prepare(definition, input, false)?;
+    let projection =
+        pl_studio_mcp::ToolProjection::prepare(definition, input, publish_output_schema)?;
     anyhow::ensure!(
         !tools.contains_key(&projection.declaration().tool_id),
         "duplicate Host MCP tool identity"
@@ -645,24 +647,43 @@ pub(super) fn host_result(
         Ok(output) => Some(output),
         Err(error) => error.observed_output(),
     };
-    let value = observed
-        .map(|output| {
-            serde_json::from_str(output.payload().content())
-                .unwrap_or_else(|_| Value::String(output.payload().content().into()))
-        })
-        .unwrap_or(Value::Null);
-    match result {
-        Ok(_) => HostResult {
-            value,
-            is_error: false,
-            content: None,
-        },
-        Err(error) => HostResult {
-            value: serde_json::json!({"error": error.to_string(), "output": value}),
-            is_error: true,
-            content: None,
-        },
+    let mut content = Vec::new();
+    let mut is_error = result.is_err();
+    if let Some(output) = observed {
+        for item in output.content() {
+            match item {
+                pl_core::context::ContextContent::Text { text } => {
+                    content.push(HostContent::Text(text.to_string()));
+                }
+                pl_core::context::ContextContent::Resource { reference } => {
+                    content.push(HostContent::Text(format!(
+                        "Resource reference: {}",
+                        serde_json::json!(reference)
+                    )));
+                }
+                // Host image reads have their own typed projection. Other
+                // content requires an explicit transport mapping, never a
+                // guessed JSON or text representation.
+                _ => {
+                    is_error = true;
+                    content.push(HostContent::Text(
+                        "Host MCP cannot project this tool content type".into(),
+                    ));
+                }
+            }
+        }
     }
+    if let Err(error) = &result {
+        content.push(HostContent::Text(error.to_string()));
+    }
+    let data = observed.map_or(ToolData::Absent, |output| {
+        output.result().tool_data().clone()
+    });
+    let mut result = ToolResult::new(data, content);
+    if let Some(details) = observed.and_then(|output| output.details()) {
+        result = result.with_details(details.clone());
+    }
+    HostResult { result, is_error }
 }
 
 struct AgentMcpTools<'a>(&'a mut BTreeMap<String, HostBinding>);
@@ -697,7 +718,7 @@ impl crate::thread_assembler::host_agent_tools::AgentToolSink for AgentMcpTools<
         definition: &ToolDefinition,
         _: crate::thread_assembler::host_agent_tools::AgentToolOptions,
     ) -> Result<Self::Prepared> {
-        prepare_binding(self.0, definition, pl_studio_mcp::JsonInput::Object)
+        prepare_binding(self.0, definition, pl_studio_mcp::JsonInput::Object, true)
     }
     fn attach<T>(&mut self, projection: Self::Prepared, tool: T)
     where
@@ -724,6 +745,15 @@ struct AcpPlanBindingTool {
     definition: ToolDefinition,
     kind: AcpPlanToolKind,
     owner: Arc<super::acp_business::AcpWorkflowPlanOwner>,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct AcpPlanTransitionOutput {
+    #[serde(flatten)]
+    outcome: pl_tool_plan::PlanTransitionOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    acp_note: Option<&'static str>,
 }
 
 impl pl_agent_tool::Tool for AcpPlanBindingTool {
@@ -786,23 +816,14 @@ impl pl_agent_tool::Tool for AcpPlanBindingTool {
                     .transition(args, plan_ctx)
                     .await
                     .map_err(ToolError::new)?;
-                let mut val = serde_json::to_value(&outcome).map_err(ToolError::new)?;
-                if outcome.accepted
-                    && outcome.awaiting_confirmation
-                    && let Some(obj) = val.as_object_mut()
-                {
-                    obj.insert(
-                        "acpNote".into(),
-                        Value::String(
-                            "Plan recorded as awaitingConfirmation (non-blocking in ACP). Present this plan clearly to the user and wait for their reply to approve or revise."
-                                .into(),
-                        ),
-                    );
-                }
-                val
+                let acp_note = (outcome.accepted && outcome.awaiting_confirmation).then_some(
+                    "Plan recorded as awaitingConfirmation (non-blocking in ACP). Present this plan clearly to the user and wait for their reply to approve or revise.",
+                );
+                serde_json::to_value(AcpPlanTransitionOutput { outcome, acp_note })
+                    .map_err(ToolError::new)?
             }
         };
-        json_output("application/json", &value)
+        json_output(&value)
     }
 }
 
@@ -887,7 +908,7 @@ impl pl_agent_tool::Tool for AcpWorkflowBindingTool {
                     .map_err(ToolError::new)?
             }
         };
-        json_output("application/json", &value)
+        json_output(&value)
     }
 }
 
@@ -896,7 +917,7 @@ fn attach_workflow_and_plan_tools(
     owner: Arc<super::acp_business::AcpWorkflowPlanOwner>,
     is_root: bool,
 ) -> Result<()> {
-    use pl_agent_tool::typed::{TypedTool, input_schema_for};
+    use pl_agent_tool::typed::{TypedTool, input_schema_for, output_schema_for};
     use pl_tool_plan::{
         PlanCurrentTool, PlanEmptyArgs, PlanHistoryArgs, PlanHistoryTool, PlanNextTool,
         PlanTransitionArgs, PlanTransitionTool,
@@ -910,7 +931,8 @@ fn attach_workflow_and_plan_tools(
                 PlanCurrentTool::<Owner>::NAME,
                 PlanCurrentTool::<Owner>::DESCRIPTION,
                 input_schema_for::<PlanEmptyArgs>(),
-            )?,
+            )?
+            .with_output_schema(output_schema_for::<pl_tool_plan::PlanSnapshot>())?,
         ),
         (
             AcpPlanToolKind::Next,
@@ -918,7 +940,8 @@ fn attach_workflow_and_plan_tools(
                 PlanNextTool::<Owner>::NAME,
                 PlanNextTool::<Owner>::DESCRIPTION,
                 input_schema_for::<PlanEmptyArgs>(),
-            )?,
+            )?
+            .with_output_schema(output_schema_for::<pl_tool_plan::PlanNextResponse>())?,
         ),
         (
             AcpPlanToolKind::History,
@@ -926,7 +949,8 @@ fn attach_workflow_and_plan_tools(
                 PlanHistoryTool::<Owner>::NAME,
                 PlanHistoryTool::<Owner>::DESCRIPTION,
                 input_schema_for::<PlanHistoryArgs>(),
-            )?,
+            )?
+            .with_output_schema(output_schema_for::<pl_tool_plan::PlanHistoryResponse>())?,
         ),
         (
             AcpPlanToolKind::Transition,
@@ -934,11 +958,13 @@ fn attach_workflow_and_plan_tools(
                 PlanTransitionTool::<Owner>::NAME,
                 PlanTransitionTool::<Owner>::DESCRIPTION,
                 input_schema_for::<PlanTransitionArgs>(),
-            )?,
+            )?
+            .with_output_schema(output_schema_for::<AcpPlanTransitionOutput>())?,
         ),
     ];
     for (kind, definition) in plan_defs {
-        let projection = prepare_binding(tools, &definition, pl_studio_mcp::JsonInput::Object)?;
+        let projection =
+            prepare_binding(tools, &definition, pl_studio_mcp::JsonInput::Object, true)?;
         attach_direct(
             tools,
             projection,
@@ -952,7 +978,8 @@ fn attach_workflow_and_plan_tools(
 
     if is_root {
         for (kind, definition) in crate::workflow_tool::workflow_tool_definitions()? {
-            let projection = prepare_binding(tools, &definition, pl_studio_mcp::JsonInput::Object)?;
+            let projection =
+                prepare_binding(tools, &definition, pl_studio_mcp::JsonInput::Object, true)?;
             attach_direct(
                 tools,
                 projection,
@@ -969,6 +996,35 @@ fn attach_workflow_and_plan_tools(
 
 impl HostTools for Handler {
     async fn catalog(&self) -> Result<HostCatalog, HostError> {
+        // Observe this owner's declaration set without capturing IPC credentials
+        // or invocation bodies. Catalog reads also occur during tool lookup.
+        if tracing::enabled!(
+            target: "pl_studio_runtime::acp_host_catalog_evidence",
+            tracing::Level::TRACE
+        ) {
+            let declarations: Vec<_> = self
+                .tools
+                .values()
+                .map(|tool| {
+                    serde_json::json!({
+                        "name": tool.declaration.tool_id,
+                        "inputSchema": tool.declaration.input_schema,
+                        "outputSchema": tool.declaration.output_schema,
+                    })
+                })
+                .collect();
+            tracing::trace!(
+                target: "pl_studio_runtime::acp_host_catalog_evidence",
+                record_json = %serde_json::json!({
+                    "kind": "acp_host_catalog",
+                    "version": 1,
+                    "pid": std::process::id(),
+                    "callerAgentId": self.caller.as_str(),
+                    "tools": declarations,
+                }),
+                "host_mcp_catalog"
+            );
+        }
         Ok(self
             .tools
             .values()
@@ -1009,26 +1065,22 @@ impl HostTools for Handler {
             result = invoke => result,
             () = self.domain_closed.cancelled() => Err(ControlError::Closed),
         };
-        let result = result.unwrap_or_else(|error| HostResult {
-            value: serde_json::json!({ "error": error.to_string() }),
-            is_error: true,
-            content: None,
-        });
+        let result = result
+            .unwrap_or_else(|error| host_result(Err(pl_core::tool::opaque::ToolError::new(error))));
         if let Some((arguments, host_call_id)) = evidence {
-            let content_summary;
-            let value = if let Some(content) = &result.content {
-                content_summary = match content {
+            let content_summary: Vec<_> = result
+                .result
+                .content()
+                .iter()
+                .map(|content| match content {
                     HostContent::Text(text) => {
                         serde_json::json!({"contentType": "text", "bytes": text.len()})
                     }
                     HostContent::Image { mime_type, .. } => {
                         serde_json::json!({"contentType": "image", "mimeType": mime_type})
                     }
-                };
-                &content_summary
-            } else {
-                &result.value
-            };
+                })
+                .collect();
             tracing::trace!(
                 target: "pl_studio_runtime::acp_host_call_evidence",
                 record_json = %serde_json::json!({
@@ -1039,7 +1091,8 @@ impl HostTools for Handler {
                     "hostCallId": host_call_id,
                     "toolId": request.tool_id,
                     "arguments": arguments,
-                    "value": value,
+                    "data": result.result.data(),
+                    "content": content_summary,
                     "isError": result.is_error,
                 }),
                 "host_mcp_call_result"
@@ -1215,7 +1268,7 @@ mod tests {
         value: &Value,
         is_error: bool,
     ) -> Result<()> {
-        ensure!(record.as_object().context("evidence object")?.len() == 9);
+        ensure!(record.as_object().context("evidence object")?.len() == 10);
         ensure!(record["kind"] == "acp_host_call_result" && record["version"] == 1);
         ensure!(record["pid"] == std::process::id());
         ensure!(record["callerAgentId"] == caller);
@@ -1226,7 +1279,8 @@ mod tests {
         );
         ensure!(record["toolId"] == tool);
         ensure!(record["arguments"] == *arguments);
-        ensure!(record["value"] == *value);
+        ensure!(record["data"] == *value);
+        ensure!(record["content"].is_array());
         ensure!(record["isError"] == is_error);
         Ok(())
     }
@@ -1385,11 +1439,11 @@ mod tests {
                 response["result"]["isError"] != true,
                 "MCP tool failed: {response}"
             );
-            Ok(response["result"]["structuredContent"].clone())
+            Ok(response["result"]["structuredContent"]["result"].clone())
         }
 
         async fn task_result(&mut self, task: &str) -> Result<Value> {
-            Ok(self.task_reply(task).await?["value"].clone())
+            Ok(self.task_reply(task).await?["result"]["data"]["value"].clone())
         }
 
         async fn completed_tool(
@@ -1405,24 +1459,57 @@ mod tests {
                 "MCP protocol failure: {response}"
             );
             let result = &response["result"];
-            if result["structuredContent"]["status"] == "running" {
-                let task = result["structuredContent"]["taskId"]
+            if result["structuredContent"]["result"]["status"] == "running" {
+                let task = result["structuredContent"]["result"]["taskId"]
                     .as_str()
                     .context("pending tool receipt")?;
                 Ok(serde_json::from_value(self.task_reply(task).await?)?)
             } else {
+                let response: rmcp::model::CallToolResult = serde_json::from_value(result.clone())?;
+                let data = response
+                    .structured_content
+                    .as_ref()
+                    .and_then(|value| value.get("result"))
+                    .cloned()
+                    .map_or(
+                        pl_agent_tool::ToolData::Absent,
+                        pl_agent_tool::ToolData::Value,
+                    );
+                let content = response
+                    .content
+                    .into_iter()
+                    .map(|item| match item {
+                        rmcp::model::ContentBlock::Text(text) => {
+                            Ok(pl_studio_mcp::HostContent::Text(text.text))
+                        }
+                        rmcp::model::ContentBlock::Image(image) => {
+                            Ok(pl_studio_mcp::HostContent::Image {
+                                data: image.data,
+                                mime_type: image.mime_type,
+                            })
+                        }
+                        _ => anyhow::bail!("unexpected host MCP content in test response"),
+                    })
+                    .collect::<Result<Vec<_>>>()?;
                 Ok(pl_studio_mcp::HostResult {
-                    value: result["structuredContent"].clone(),
-                    is_error: result["isError"] == true,
-                    content: None,
+                    result: pl_agent_tool::ToolResult::new(data, content),
+                    is_error: response.is_error.unwrap_or(false),
                 })
             }
         }
 
         async fn completed_value(&mut self, name: &str, arguments: Value) -> Result<Value> {
             let result = self.completed_tool(name, arguments).await?;
-            ensure!(!result.is_error, "MCP tool {name} failed: {}", result.value);
-            Ok(result.value)
+            ensure!(
+                !result.is_error,
+                "MCP tool {name} failed: {:?}",
+                result.result.data()
+            );
+            result
+                .result
+                .data()
+                .cloned()
+                .context("tool supplied no program value")
         }
 
         async fn task_reply(&mut self, task: &str) -> Result<Value> {
@@ -1508,11 +1595,21 @@ mod tests {
             config: &crate::config::StudioConfig,
             binding: PreparedAcpWorkspace,
         ) -> Result<HttpMcp> {
+            self.start_with_timeout(config, binding, Duration::from_millis(250))
+                .await
+        }
+
+        async fn start_with_timeout(
+            &mut self,
+            config: &crate::config::StudioConfig,
+            binding: PreparedAcpWorkspace,
+            timeout: Duration,
+        ) -> Result<HttpMcp> {
             let tools = WorkspaceTools::new_with_handoff_timeout(
                 self.target.thread_id.clone(),
                 binding,
                 config,
-                Duration::from_millis(250),
+                timeout,
             );
             let (service, definition) = HostMcp::start_bound(
                 self.host.clone(),
@@ -1693,7 +1790,7 @@ mod tests {
                     )
                     .await?;
                 ensure!(text["result"]["content"] == json!([{"type":"text","text":"远端内容\n"}]));
-                ensure!(text["result"].get("structuredContent").is_none());
+                ensure!(text["result"]["structuredContent"] == json!({"result":"远端内容\n"}));
 
                 let image = peer
                     .request(
@@ -1725,7 +1822,11 @@ mod tests {
                 ] {
                     let failed = peer.completed_tool(name, json!({"path":path})).await?;
                     ensure!(
-                        failed.is_error && failed.value["error"].is_string(),
+                        failed.is_error
+                            && failed.result.data().is_none()
+                            && failed.result.content().iter().any(|content| {
+                                matches!(content, pl_studio_mcp::HostContent::Text(text) if !text.is_empty())
+                            }),
                         "{name} should reject {path}"
                     );
                 }
@@ -1800,9 +1901,25 @@ mod tests {
     async fn ssh_workspace_mcp_isolates_owned_tasks_and_retains_command_output() -> Result<()> {
         with_ssh_workspace(|h| Box::pin(async move {
             let mut peer = h.start_default().await?;
+            let catalog = peer.request("tools/list", json!({})).await?;
+            let tools = catalog["result"]["tools"].as_array().context("MCP tools")?;
+            let declared = |name: &str| -> Result<&Value> {
+                tools.iter().find(|tool| tool["name"] == name).context("declared task tool")
+            };
+            let wait_schema = &declared("anywork_wait")?["outputSchema"]["properties"]["result"];
+            ensure!(wait_schema["required"] == json!(["tasks", "timedOut"]), "ACP wait declared Native readiness: {wait_schema}");
+            ensure!(wait_schema["properties"].get("messagesReady").is_none());
+            let query_schema = &declared("anywork_get_tool_task")?["outputSchema"]["properties"]["result"];
+            ensure!(query_schema["properties"].get("archiveError").is_some());
+            ensure!(query_schema["properties"].get("outputRepairs").is_some());
+            ensure!(declared("anywork_get_tool_task")?["description"].as_str().context("query description")?.contains("result.data.value"));
+            let empty_wait = peer.tool("anywork_wait", json!({"taskIds":[],"timeoutMs":1})).await?;
+            ensure!(empty_wait == json!({"tasks":[],"timedOut":true}));
             let mut files_peer = h.start_default().await?;
             let command = peer.tool("anywork_exec_command", json!({"command":"printf ready; cat; printf done","interactive":true})).await?;
             let task = command["taskId"].as_str().context("running exec receipt")?.to_owned();
+            let status_only = peer.tool("anywork_get_tool_task", json!({"taskId":task})).await?;
+            ensure!(status_only["task"]["taskId"] == task && status_only.get("result").is_none());
             let foreign = files_peer.request("tools/call", json!({"name":"anywork_get_tool_task","arguments":{"taskId":task,"resultCursor":0}})).await?;
             ensure!(foreign["result"]["isError"] == true, "another task owner accepted an original receipt from this instance");
             let mut input = peer.tool("anywork_write_stdin", json!({"taskId":task,"chars":"input\n","closeStdin":true})).await?;
@@ -1812,7 +1929,7 @@ mod tests {
             }
             ensure!(input["targetTaskId"] == task && input["inputReceipt"]["acceptedBytes"] == 6, "stdin did not use the real exec receipt: {input}");
             let result = peer.task_result(&task).await?;
-            ensure!(result["stdout"]["content"].as_str().context("stdout")?.contains("readyinput\ndone"));
+            ensure!(result["stdout"].as_str().context("stdout")?.contains("readyinput\ndone"));
             let wrong = peer.completed_tool("anywork_write_stdin", json!({"taskId":"task:foreign-instance","chars":"do-not-send"})).await?;
             ensure!(wrong.is_error, "foreign task stdin succeeded");
 
@@ -1821,7 +1938,7 @@ mod tests {
                 let task = output["taskId"].as_str().context("output command receipt")?.to_owned();
                 output = peer.task_result(&task).await?;
             }
-            ensure!(output["stdout"]["wasTruncated"] == true && output["stdout"]["content"].as_str().context("preview")?.len() <= 64, "unexpected output preview: {output}");
+            ensure!(output["stdoutWasTruncated"] == true && output["stdout"].as_str().context("preview")?.len() <= 64, "unexpected output preview: {output}");
             let capture = output["stdoutFile"].as_str().context("capture path")?;
             ensure!(tokio::fs::metadata(h.root.join(capture)).await?.len() == 70000);
             let cancelled = peer.tool("anywork_exec_command", json!({"command":"cat","interactive":true})).await?;
@@ -1879,13 +1996,14 @@ mod tests {
             let response = failed_peer.request("tools/call", json!({"name":"anywork_exec_command","arguments":{"command":"printf once >> mutation-count; printf archive-output"}})).await?;
             ensure!(response["error"].is_null(), "MCP protocol failure: {response}");
             let result = &response["result"];
-            let receipt = &result["structuredContent"];
+            let receipt = &result["structuredContent"]["result"];
             let failed_task = receipt["taskId"].as_str().context("original task receipt")?;
             if receipt["status"] == "running" {
                 ensure!(result["isError"] != true, "running tool reported failure: {response}");
                 failed_peer.tool("anywork_wait", json!({"taskIds":[failed_task],"timeoutMs":30000})).await?;
             } else {
-                ensure!(result["isError"] == true && receipt["resultArchiveError"].is_string(), "missing archive failure: {response}");
+                ensure!(result["isError"] == true && result["content"].as_array().is_some_and(|content| content.iter().any(|part| part["text"].as_str().is_some_and(|text| text.contains("Result archive failed")))), "missing archive failure: {response}");
+                ensure!(receipt.get("output").is_none(), "archive envelope replaced the author value");
             }
             let before = failed_peer.tool("anywork_get_tool_task", json!({"taskId":failed_task,"resultCursor":0})).await?;
             ensure!(before["task"]["status"] == "failed" && before["archiveError"].is_string(), "task did not retain the archive failure: {before}");
@@ -1899,6 +2017,47 @@ mod tests {
             ensure!(tokio::fs::read_to_string(h.root.join("mutation-count")).await? == "once", "archive repair reexecuted a mutation");
 
             Ok(())
+        })).await
+    }
+
+    #[tokio::test]
+    async fn ssh_workspace_mcp_archive_failure_preserves_author_value_and_absence() -> Result<()> {
+        with_ssh_workspace(|h| Box::pin(async move {
+            let blocked = h.fixture.home.path().join("blocked-result-store");
+            tokio::fs::write(&blocked, b"block directory creation").await?;
+            let binding = PreparedAcpWorkspace {
+                store: crate::resource_store::FileResourceStore::new(blocked.clone()),
+                ..h.binding.clone()
+            };
+            let config = h.config.clone();
+            let mut peer = h.start_with_timeout(&config, binding, Duration::from_secs(30)).await?;
+            let owner = h.services.last().context("workspace owner")?.1.clone();
+            let observed = async {
+                let valued = peer.request("tools/call", json!({"name":"anywork_exec_command","arguments":{"command":"printf once >> archive-value-count; printf original-output"}})).await?;
+                ensure!(valued["error"].is_null());
+                let value = &valued["result"];
+                ensure!(value["isError"] == true);
+                let data = &value["structuredContent"]["result"];
+                ensure!(data["stdout"] == "original-output" && data.get("output").is_none() && data.get("details").is_none(), "archive failure replaced author data: {valued}");
+                let content = value["content"].as_array().context("valued content")?;
+                ensure!(content.iter().any(|part| part["text"].as_str().is_some_and(|text| text.contains("original-output"))));
+                ensure!(content.last().and_then(|part| part["text"].as_str()).is_some_and(|text| text.contains("Result archive failed") && text.contains(data["taskId"].as_str().unwrap_or("missing-task"))));
+
+                // The typed file author rejects this input without an observed program value.
+                // Command validation has its own explicit diagnostic data and is not Absent.
+                let absent = peer.request("tools/call", json!({"name":"anywork_stat_path","arguments":{"path":42}})).await?;
+                ensure!(absent["error"].is_null() && absent["result"]["isError"] == true);
+                ensure!(absent["result"].get("structuredContent").is_none(), "archive failure invented a program value: {absent}");
+                let content = absent["result"]["content"].as_array().context("absent content")?;
+                ensure!(content.len() >= 2, "original input failure was discarded: {absent}");
+                ensure!(content.last().and_then(|part| part["text"].as_str()).is_some_and(|text| text.contains("Result archive failed")));
+                ensure!(tokio::fs::read_to_string(h.root.join("archive-value-count")).await? == "once");
+                Ok::<_, anyhow::Error>(())
+            }.await;
+            // Release only this test-created blocker so the existing owner can retain its results.
+            tokio::fs::remove_file(&blocked).await?;
+            owner.close().await?;
+            observed
         })).await
     }
 
@@ -2086,7 +2245,11 @@ mod tests {
                 .await
                 .context("invoke original member list")?;
             ensure!(
-                !listed.is_error && listed.value.to_string().contains(&open.target.agent_id),
+                !listed.is_error
+                    && listed
+                        .result
+                        .data()
+                        .is_some_and(|value| value.to_string().contains(&open.target.agent_id)),
                 "IPC did not read the original member directory"
             );
             ensure!(
@@ -2109,7 +2272,7 @@ mod tests {
                 .await
                 .context("invoke original profile list")?;
             ensure!(
-                !profiles.is_error && profiles.value.is_object(),
+                !profiles.is_error && profiles.result.data().is_some_and(Value::is_object),
                 "profile domain query failed"
             );
             let records = evidence_records(&evidence)?;
@@ -2122,7 +2285,7 @@ mod tests {
                 &open.target.agent_id,
                 "anywork_list_agent_profiles",
                 &json!({}),
-                &profiles.value,
+                profiles.result.data().context("profile data")?,
                 profiles.is_error,
             )?;
             let forged = json!({
@@ -2155,7 +2318,7 @@ mod tests {
                 &open.target.agent_id,
                 "anywork_list_agents",
                 &forged,
-                &failed.value,
+                failed.result.data().unwrap_or(&Value::Null),
                 failed.is_error,
             )?;
             ensure!(records[0]["hostCallId"] != records[1]["hostCallId"]);
@@ -2365,7 +2528,7 @@ mod tests {
                 &target.agent_id,
                 "anywork_list_agent_profiles",
                 &json!({}),
-                &profiles["result"]["structuredContent"],
+                &profiles["result"]["structuredContent"]["result"],
                 false,
             )?;
 
@@ -2767,7 +2930,7 @@ mod tests {
                 spawned["result"]["isError"] != true,
                 "the real ACP child spawn failed"
             );
-            let child_id = spawned["result"]["structuredContent"]["agentId"]
+            let child_id = spawned["result"]["structuredContent"]["result"]["agentId"]
                 .as_str()
                 .context("spawn result agent id")?
                 .to_owned();
@@ -2865,9 +3028,9 @@ mod tests {
             ensure!(
                 report["result"]["isError"] != true,
                 "wait for completed ACP child report failed: {}",
-                report["result"]["structuredContent"]["error"]
+                report["result"]["structuredContent"]["result"]["error"]
             );
-            let report = &report["result"]["structuredContent"];
+            let report = &report["result"]["structuredContent"]["result"];
             ensure!(
                 report["reports"]
                     .as_array()

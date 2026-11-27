@@ -2,6 +2,7 @@
 use super::AgentPhase;
 use anyhow::{Context, Result, ensure};
 use serde_json::Value;
+use std::borrow::Cow;
 
 pub(super) fn phase(body: &Value) -> Result<AgentPhase> {
     ensure!(
@@ -73,7 +74,7 @@ pub(super) fn text(item: &Value) -> Option<String> {
     )
 }
 
-pub(super) fn tool_output<'a>(body: &'a Value, call_id: &str) -> Result<&'a str> {
+pub(super) fn tool_output<'a>(body: &'a Value, call_id: &str) -> Result<Cow<'a, str>> {
     let outputs = body
         .get("input")
         .and_then(Value::as_array)
@@ -91,7 +92,7 @@ pub(super) fn tool_output<'a>(body: &'a Value, call_id: &str) -> Result<&'a str>
     );
     outputs[0]
         .get("output")
-        .and_then(Value::as_str)
+        .and_then(crate::responses_output_text)
         .context("tool output is not text")
 }
 
@@ -161,4 +162,35 @@ pub(super) fn declared(body: &Value, name: &str) -> bool {
                 .iter()
                 .any(|tool| tool.get("name").and_then(Value::as_str) == Some(name))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tool_output;
+    use serde_json::{Value, json};
+
+    #[test]
+    fn responses_tool_output_preserves_content_and_unique_call_identity() {
+        for output in [
+            json!("{\"messageAccepted\": true}"),
+            json!([
+                {"type":"input_text", "text":"{\"messageAccepted\":"},
+                {"type":"input_text", "text":"true}"}
+            ]),
+        ] {
+            let mut body = json!({"input":[
+                {"type":"function_call_output", "call_id":"other", "output":"wrong"},
+                {"type":"function_call_output", "call_id":"action", "output":output}
+            ]});
+            let text = tool_output(&body, "action").unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&text).unwrap(),
+                json!({"messageAccepted":true})
+            );
+            assert!(tool_output(&body, "missing").is_err());
+            let duplicate = body["input"][1].clone();
+            body["input"].as_array_mut().unwrap().push(duplicate);
+            assert!(tool_output(&body, "action").is_err());
+        }
+    }
 }

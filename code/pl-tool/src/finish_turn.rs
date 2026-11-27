@@ -41,6 +41,8 @@ pub fn declaration() -> ToolDefinition {
         pl_agent_tool::typed::input_schema_for::<OrdinaryFinishTurnInput>(),
     )
     .expect("valid tool definition")
+    .with_output_schema(crate::binding::program_schema::<String>())
+    .expect("static finish report data schema")
 }
 
 pub fn review_declaration() -> ToolDefinition {
@@ -49,6 +51,8 @@ pub fn review_declaration() -> ToolDefinition {
         "End this review Turn with the full report and an optional structured review conclusion. reviewedVersion must identify the actual reviewed commit or diff/content; it is not a host verification of disk state.",
         pl_agent_tool::typed::input_schema_for::<FinishTurnInput>(),
     ).expect("valid tool definition")
+    .with_output_schema(crate::binding::program_schema::<String>())
+    .expect("static finish report data schema")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
@@ -105,37 +109,14 @@ enum InvalidReview {
     Version,
 }
 
-/// Reads an immutable saved report without granting execution authority.
-/// # Errors
-/// Returns a decoding error for a malformed recognized payload.
-pub fn saved_message(payload: &OpaquePayload) -> Result<Option<String>, ReportDecodeError> {
-    Ok(saved_report(payload)?.map(|report| report.message))
-}
-
-/// Decodes historical v1 as message only; body text never implies a review disposition.
-/// # Errors
-/// Returns a decoding error for a malformed recognized payload.
-pub fn saved_report(payload: &OpaquePayload) -> Result<Option<SavedFinishTurn>, ReportDecodeError> {
-    if payload.format() != "pl.tool.finish-turn" {
-        return Ok(None);
-    }
-    match payload.version() {
-        1 => {
-            #[derive(Deserialize)]
-            #[serde(deny_unknown_fields)]
-            struct LegacyReport {
-                message: String,
-            }
-            let report: LegacyReport = serde_json::from_str(payload.content())?;
-            Ok(Some(SavedFinishTurn {
-                message: report.message,
-                review: None,
-                feedback_message: None,
-            }))
-        }
-        2 => serde_json::from_str(payload.content()).map(Some),
-        _ => Ok(None),
-    }
+/// Reads an immutable saved report from original result details.
+pub fn saved_report(
+    details: Option<&serde_json::Value>,
+) -> Result<Option<SavedFinishTurn>, ReportDecodeError> {
+    details
+        .and_then(|details| details.get("finishTurn"))
+        .map(|value| serde_json::from_value(value.clone()))
+        .transpose()
 }
 
 /// Registers explicit Turn-ending authority.
@@ -224,18 +205,9 @@ impl pl_agent_tool::Tool for FinishTurnTool {
             message: report.message,
             review: report.review,
         };
-        let payload = OpaquePayload::new(
-            "pl.tool.finish-turn",
-            2,
-            serde_json::to_string(&saved).map_err(ToolError::new)?,
-        )
-        .map_err(ToolError::new)?;
-        Ok(ToolOutput::new(
-            payload,
-            vec![pl_core::context::ContextContent::Text {
-                text: saved.message.into(),
-            }],
-        )
-        .ending_turn())
+        let details = serde_json::to_value(&saved).map_err(ToolError::new)?;
+        Ok(ToolOutput::text(saved.message)
+            .with_details(serde_json::json!({"finishTurn": details}))
+            .ending_turn())
     }
 }

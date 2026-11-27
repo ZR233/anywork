@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/rendering.dart' show RenderParagraph;
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/domain/models/timeline_commands.dart';
+import 'package:anywork/src/features/conversation/timeline/state/tool_data_artifact.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_view_state.dart';
 import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
@@ -335,11 +336,12 @@ void main() {
         findsNothing,
         reason: '${fixture.contract} 不应显示原始参数信封',
       );
-      if (fixture.output.startsWith('{')) {
+      if (fixture.toolData case ToolDataArtifactPresent(value: final value)
+          when value is Map || value is List) {
         expect(
-          find.text(fixture.output),
+          find.text(jsonEncode(value)),
           findsNothing,
-          reason: '${fixture.contract} 应呈现结构化语义字段而不是原始 JSON 回执',
+          reason: '${fixture.contract} 应呈现结构化语义字段，而不是原始 toolData JSON',
         );
       }
       final expected = _expectedReadableText[fixture.contract];

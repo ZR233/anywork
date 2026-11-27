@@ -58,5 +58,7 @@ mod search_host;
 mod ssh_lsp_real;
 #[path = "integration/standalone_tools.rs"]
 mod standalone_tools;
+#[path = "integration/task_control.rs"]
+mod task_control;
 #[path = "integration/typed_binding.rs"]
 mod typed_binding;

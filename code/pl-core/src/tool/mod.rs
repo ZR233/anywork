@@ -4,4 +4,5 @@ pub mod execution_policy;
 pub mod opaque;
 mod output;
 pub mod task;
+pub use opaque::ToolFailureKind;
 pub use output::{ToolControl, ToolOutput};

@@ -64,13 +64,12 @@ async fn execute(
     );
     assert_eq!(tool.definition(), &definition);
     let result = tool.execute(input(raw), context()).await?;
-    assert_eq!(result.payload().format(), "pl.tool.git");
-    assert_eq!(result.payload().version(), 1);
+
     Ok(result)
 }
 
 fn payload(output: &ToolOutput) -> Value {
-    serde_json::from_str(output.payload().content()).unwrap()
+    output.data().unwrap().clone()
 }
 
 #[tokio::test]
@@ -125,7 +124,7 @@ async fn production_binding_dispatches_all_eight_independent_tools_with_existing
                 .unwrap()
         ),
         json!({
-            "clone": repo.worktree, "worktree": repo.worktree,
+            "clone": repo.worktree, "worktree": repo.worktree, "metadata": {},
         })
     );
     assert_eq!(
@@ -148,7 +147,7 @@ async fn production_binding_dispatches_all_eight_independent_tools_with_existing
         .downcast_ref::<GitHostError>()
         .unwrap()
         .original();
-    assert_eq!(source.observed().unwrap().payload()["status"], 1);
+    assert_eq!(source.observed().unwrap().data()["status"], 1);
     assert!(
         source
             .observed()
@@ -467,8 +466,7 @@ async fn sync_failure_history(failure: SyncFailure) {
     };
     assert_public_diagnostic(error, PRIVATE_SYNC_TOKEN);
     assert!(!error.source.is::<GitHostError>());
-    assert_eq!(delivery.output.payload().format(), "pl.tool.git");
-    assert_eq!(delivery.output.payload().version(), 1);
+
     let payload = payload(&delivery.output);
     let observations = payload["observations"].as_array().expect(
         "all completed and failed Git command observations must survive real Thread history",

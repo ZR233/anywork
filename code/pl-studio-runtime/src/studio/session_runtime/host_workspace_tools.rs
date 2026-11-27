@@ -199,7 +199,13 @@ pub(crate) fn workspace<S: HostWorkspaceSink>(
             pl_tool::workspace_file::ThreadStatPathTool<
                 pl_tool::workspace_file::ExecutorWorkspaceFileBackend,
             >,
-        >()?;
+        >()?
+        .with_output_schema(
+            pl_tool::workspace_file::thread_stat_path_tool_definition()
+                .output_schema()
+                .cloned()
+                .expect("stat author declares its result"),
+        )?;
         let mut metadata = HostToolMetadata::workspace(workspace.authorization());
         metadata.presentation = Some("builtin.stat_path@1");
         let prepared = sink.prepare(adapter.definition(), metadata)?;
@@ -213,7 +219,13 @@ pub(crate) fn workspace<S: HostWorkspaceSink>(
             pl_tool::workspace_file::ThreadWriteFileTool<
                 pl_tool::workspace_file::ExecutorWorkspaceFileBackend,
             >,
-        >()?;
+        >()?
+        .with_output_schema(
+            pl_tool::workspace_file::thread_write_file_tool_definition()
+                .output_schema()
+                .cloned()
+                .expect("write author declares its result"),
+        )?;
         let mut metadata = HostToolMetadata::workspace(workspace.authorization());
         metadata.presentation = Some("builtin.write_file@1");
         metadata.scheduling = HostScheduling::ForegroundCoexisting;
@@ -307,7 +319,13 @@ pub(crate) fn local_skill_management<S: HostWorkspaceSink>(
     if !enabled || !local {
         return Ok(());
     }
-    let adapter = prepare_native_tool::<pl_tool::skill::ThreadSkillManageTool>()?;
+    let adapter = prepare_native_tool::<pl_tool::skill::ThreadSkillManageTool>()?
+        .with_output_schema(
+            pl_tool::skill::ThreadSkillManageTool::declaration()
+                .output_schema()
+                .cloned()
+                .expect("skill author declares its result"),
+        )?;
     let mut metadata = HostToolMetadata::workspace(workspace.authorization());
     metadata.domain = HostToolDomain::Skill;
     metadata.json_input = HostJsonInput::Value;

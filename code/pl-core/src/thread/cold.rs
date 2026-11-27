@@ -254,7 +254,7 @@ pub enum StorageFaultKind {
 /// backend when it has one, so a Thread under pressure is granted less than this ceiling.
 pub const MAX_OPERATION_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
 
-/// One completed tool-task snapshot answered from the Thread's bounded in-memory ledger.
+/// Terminal task identity and its immutable original delivery, when available.
 #[derive(Debug, Clone)]
 pub struct DurableToolTask {
     pub task: super::task::TaskRecord,
@@ -293,6 +293,12 @@ pub(crate) trait ErasedStorage: Send + Sync + fmt::Debug {
     fn is_history(&self) -> bool {
         true
     }
+    fn read_saved_tool_task<'a>(
+        &'a self,
+        thread: &'a str,
+        id: &'a str,
+    ) -> BoxFuture<'a, Result<Option<DurableToolTask>, ColdStoreError>>;
+
     fn read_saved_model_settlement<'a>(
         &'a self,
         _thread: &'a str,

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// 定义身份、显示文本、用途与内容修订完整保留；账号、模型、推理强度与指令正文
 /// 的冻结归 Profile／binding／指令快照各自的 owner，不在此重复第二份事实。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentDefinitionSnapshot {
     pub definition_id: String,

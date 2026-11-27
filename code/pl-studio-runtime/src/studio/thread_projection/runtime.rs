@@ -147,7 +147,10 @@ fn project_with_mode(
                 .deliveries
                 .iter()
                 .rev()
-                .find(|delivery| delivery.output.payload() == &record.payload)
+                .find(|delivery| delivery.output.extension_mutations().iter().any(|mutation| {
+                    matches!(mutation, pl_core::thread::extensions::ExtensionMutation::Put { id, payload, .. }
+                        if id == "pl.tool.todo" && payload == &record.payload)
+                }))
                 .map_or_else(String::new, |delivery| delivery.call_id.clone());
             pl_tool::todo::saved_snapshot(&record.payload, call_id)
         })
@@ -182,7 +185,7 @@ fn project_with_mode(
         .extensions
         .values()
         .filter(|record| record.payload.format() == "pl.tool.skill-view")
-        .map(|record| pl_tool::skill::saved_skill_name(&record.payload))
+        .map(|record| pl_tool::skill::saved_skill_extension_name(&record.payload))
         .collect::<Result<std::collections::BTreeSet<_>, _>>()?
         .into_iter()
         .collect();

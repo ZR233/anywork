@@ -7,6 +7,8 @@ import '../../../../app/theme/studio_tokens.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import 'timeline_activity_row.dart';
 
+const timelineBodyWindowMaxBytes = 64 * 1024;
+
 class TimelineBodyReadQualification extends InheritedWidget {
   const TimelineBodyReadQualification({
     required this.value,

@@ -7,7 +7,7 @@ use pl_agent_tool::{
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::json;
 
 pub const NAME: &str = "git_workspace_info";
 
@@ -22,6 +22,17 @@ pub fn definition() -> ToolDefinition {
         input_schema_for::<GitEmptyInput>(),
     )
     .expect("valid Git tool definition")
+    .with_output_schema(json!({
+        "type": "object",
+        "properties": {
+            "clone": {"type": "string"},
+            "worktree": {"type": "string"},
+            "metadata": {"type": "object", "description": "Host-provided repository metadata keyed by name."},
+        },
+        "required": ["clone", "worktree", "metadata"],
+        "additionalProperties": false,
+    }))
+    .expect("valid Git workspace info schema")
 }
 
 #[derive(Debug)]
@@ -48,12 +59,10 @@ impl Tool for GitWorkspaceInfo {
 
     async fn execute(&self, input: String, _context: ()) -> Result<GitOutput, GitError> {
         decode_json::<GitEmptyInput>(&input)?;
-        let mut payload = serde_json::Map::new();
-        payload.insert("worktree".to_string(), json!(self.config.worktree));
-        payload.insert("clone".to_string(), json!(self.config.worktree));
-        for (key, value) in &self.config.workspace_info {
-            payload.insert(key.clone(), value.clone());
-        }
-        Ok(GitOutput::new(Value::Object(payload)))
+        Ok(GitOutput::new(json!({
+            "clone": self.config.worktree,
+            "worktree": self.config.worktree,
+            "metadata": self.config.workspace_info,
+        })))
     }
 }

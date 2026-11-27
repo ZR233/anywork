@@ -71,6 +71,7 @@ impl Owner {
                         tool_id: call.call.tool_id.clone(),
                     },
                     content: content.clone(),
+                    tool_data: Default::default(),
                     tool_calls: Vec::new(),
                 },
             )
@@ -79,12 +80,13 @@ impl Owner {
                 target: ToolDeliveryTarget::CallResult,
                 call_id: call_id.clone(),
                 tool_id: call.call.tool_id.clone(),
-                output: crate::tool::ToolOutput::new(
-                    OpaquePayload::text("cancelled before execution"),
+                output: crate::tool::ToolOutput::new(pl_agent_tool::ToolResult::new(
+                    pl_agent_tool::ToolData::Absent,
                     content.clone(),
-                ),
+                )),
                 delivered_context: content,
                 outcome: ToolOutcome::Cancelled,
+                cancellation_cause: None,
             });
         }
         for call_id in selected {

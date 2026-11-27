@@ -654,7 +654,7 @@ async fn invoke_with_cancellation(
         .await;
     match result {
         Ok(output) => {
-            let value: Value = serde_json::from_str(output.payload().content())?;
+            let value: Value = output.data().expect("tool declares result data").clone();
             println!("{}", json!({"step": label, "result": value}));
             Ok(value)
         }

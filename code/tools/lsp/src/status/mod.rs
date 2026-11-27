@@ -14,6 +14,9 @@ pub fn lsp_status_definition() -> ToolDefinition {
         pl_agent_tool::typed::input_schema_for::<LspStatusInput>(),
     )
     .expect("static tool definition")
+    .with_output_schema(schemars::generate::SchemaSettings::draft2020_12()
+        .for_serialize().into_generator().into_root_schema_for::<WorkspaceStatus>().to_value())
+    .expect("static LSP output schema")
 }
 
 #[derive(Debug, thiserror::Error)]

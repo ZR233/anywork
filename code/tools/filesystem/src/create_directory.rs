@@ -28,6 +28,8 @@ impl<B: MutationBackend + 'static> TypedTool for CreateDirectoryTool<B> {
 pub fn definition<B: MutationBackend + 'static>() -> pl_agent_tool::ToolDefinition {
     pl_agent_tool::typed::prepare_json::<CreateDirectoryTool<B>>()
         .expect("static file tool definition")
+        .with_output_schema()
+        .expect("static file output schema")
         .definition()
         .clone()
 }

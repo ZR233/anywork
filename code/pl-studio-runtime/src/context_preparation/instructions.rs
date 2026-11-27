@@ -150,6 +150,7 @@ pub(super) fn restore_current_instructions(
         extension_id: crate::instruction::INSTRUCTIONS_EXTENSION.into(),
     });
     let canonical = ContextRecord {
+        tool_data: Default::default(),
         id: record_id,
         turn_id: None,
         source: ContextSource::InstructionSnapshot {

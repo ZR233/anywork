@@ -3,10 +3,7 @@ use super::{
     WorkspaceFileBackend,
     independent::{FileCapability, granted_backend},
 };
-use pl_core::{
-    context::{ContextContent, OpaquePayload},
-    tool::{ToolOutput, opaque::ToolError},
-};
+use pl_core::tool::{ToolOutput, opaque::ToolError};
 use std::sync::Arc;
 
 /// A Thread-owned metadata reader with frozen backend access authority.
@@ -46,13 +43,9 @@ impl<B: WorkspaceFileBackend + 'static> pl_agent_tool::typed::TypedTool for Thre
             .execute(input, FileCapability(backend))
             .await
             .map_err(ToolError::new)?;
-        let content = serde_json::to_string(&receipt).map_err(ToolError::new)?;
-        Ok(ToolOutput::new(
-            OpaquePayload::new("pl.tool.path-stat", 1, content.clone()).map_err(ToolError::new)?,
-            vec![ContextContent::Text {
-                text: content.into(),
-            }],
-        ))
+        serde_json::to_value(receipt)
+            .map(ToolOutput::json)
+            .map_err(ToolError::new)
     }
 }
 

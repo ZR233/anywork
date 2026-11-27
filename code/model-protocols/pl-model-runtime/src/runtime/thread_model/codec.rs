@@ -218,6 +218,7 @@ fn receipt_parts(
         ContextContent::Opaque { payload } if payload.format() == FRAME_FORMAT => Some(payload),
         ContextContent::Text { .. }
         | ContextContent::Resource { .. }
+        | ContextContent::Media { .. }
         | ContextContent::Opaque { .. } => None,
     });
     let Some(payload) = frames.next() else {
@@ -231,7 +232,9 @@ fn receipt_parts(
         .iter()
         .filter_map(|content| match content {
             ContextContent::Text { text } => Some(text.as_ref()),
-            ContextContent::Opaque { .. } | ContextContent::Resource { .. } => None,
+            ContextContent::Opaque { .. }
+            | ContextContent::Media { .. }
+            | ContextContent::Resource { .. } => None,
         })
         .collect::<Vec<_>>();
     if frame.source.is_some() && content.len() != text.len() + 1 {
@@ -442,6 +445,7 @@ pub(super) fn request(
                     }
                     ContextContent::Text { .. }
                     | ContextContent::Resource { .. }
+                    | ContextContent::Media { .. }
                     | ContextContent::Opaque { .. } => None,
                 })
                 .collect::<Vec<_>>();
@@ -458,7 +462,9 @@ pub(super) fn request(
                     .iter()
                     .filter_map(|content| match content {
                         ContextContent::Text { text } => Some(text.as_ref()),
-                        ContextContent::Resource { .. } | ContextContent::Opaque { .. } => None,
+                        ContextContent::Resource { .. }
+                        | ContextContent::Media { .. }
+                        | ContextContent::Opaque { .. } => None,
                     })
                     .collect::<Vec<_>>();
                 if frame.bindings != record.tool_calls
@@ -553,7 +559,7 @@ pub(super) fn request(
                 ContextContent::Text { text } => parts.push(crate::completion::ContentPart::Text {
                     text: text.to_string(),
                 }),
-                ContextContent::Opaque { payload } => {
+                ContextContent::Media { payload } => {
                     let attachment = super::media::decode(payload)?;
                     let reference = attachment.reference;
                     match &record.source {
@@ -602,6 +608,9 @@ pub(super) fn request(
                         text: format!("Resource reference: {descriptor}"),
                     });
                 }
+                ContextContent::Opaque { .. } => {
+                    return Err(invalid("unsupported opaque context content"));
+                }
             }
         }
         let role = match &record.source {
@@ -625,6 +634,7 @@ pub(super) fn request(
                 call_id: call.call_id.clone(),
                 name: call.name.clone(),
                 kind: call.kind,
+                data: record.tool_data.as_value().cloned(),
             });
         }
         if let ContextSource::ToolResult { call_id, .. } = &record.source {

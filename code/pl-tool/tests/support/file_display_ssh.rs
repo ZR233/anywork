@@ -256,7 +256,7 @@ async fn exercise(manager: &SshManager, remote_path: &str, artifacts: &Path) -> 
         let deliveries = effects.iter().flat_map(|effect| effect.deliveries.iter()).collect::<Vec<_>>();
         ensure!(deliveries.len() == 1, "expected exactly one actual Thread tool delivery");
         let delivery = deliveries[0];
-        let receipt = saved_file_display_receipt(delivery.output.payload())?.context("show_files receipt")?;
+        let receipt = saved_file_display_receipt(delivery.output.details())?.context("show_files receipt")?;
         ensure!(receipt.caption.as_deref() == Some("remote originals") && receipt.files.len() == 5);
         ensure!(matches!(&receipt.files[2], FileDisplayResult::Failed { filename, .. } if filename == "missing.txt"));
         ensure!(delivery.delivered_context.iter().all(|content| !matches!(content, ContextContent::Opaque { .. })),
@@ -300,7 +300,7 @@ async fn exercise(manager: &SshManager, remote_path: &str, artifacts: &Path) -> 
         ensure!(download_backend.validate_deferred_file(&target).await.is_err(), "deleted source passed EOF verification");
         println!("{}", serde_json::json!({"index":3,"filename":"opaque.bin","bytes":downloaded.len(),
             "deferred":true,"notEagerlyRetained":true,"exactStreamVerified":true,"changedRejected":true,"deletedRejected":true}));
-        std::fs::write(artifacts.join("receipt.json"), serde_json::to_vec_pretty(delivery.output.payload())?)?;
+        std::fs::write(artifacts.join("receipt.json"), serde_json::to_vec_pretty(delivery.output.details().context("show_files details")?)?)?;
         // Remove/change actual remote sources before downloading through retained resource identities.
         files.write_text(WorkspaceFileWriteRequest {
             mode:pl_tool::workspace::WriteMode::Overwrite, path:"report.md".into(), cwd:None,

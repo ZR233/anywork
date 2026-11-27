@@ -1,15 +1,13 @@
 //! Native task queries read the producer receipt carried by the canonical tool original.
 use std::sync::Arc;
 
-#[cfg(test)]
 use pl_core::thread::cold::DurableToolTask;
 use pl_core::thread::{ToolDelivery, task::TaskRecord};
 
-use crate::history::{HistoryBody, HistoryBodyRole, HistoryError, Result};
-#[cfg(test)]
-use crate::history::{HistoryDemand, HistoryReader, read_event_body_bytes};
+use crate::history::{HistoryBody, HistoryBodyRole, HistoryError, HistoryReader, Result};
+use serde_json::value::RawValue;
 
-const BODY_KEY: &str = "native.tool-task.v1";
+pub(crate) const BODY_KEY: &str = "native.tool-task.v2";
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -19,7 +17,7 @@ struct StoredToolTask {
 }
 
 impl StoredToolTask {
-    fn validate(&self, task_id: &str, call_id: &str) -> Result<()> {
+    fn validate(&self, call_id: &str) -> Result<()> {
         let expected = match &self.delivery.outcome {
             pl_core::thread::ToolOutcome::Succeeded => pl_core::thread::task::TaskStatus::Succeeded,
             pl_core::thread::ToolOutcome::Failed(_) => pl_core::thread::task::TaskStatus::Failed,
@@ -28,11 +26,14 @@ impl StoredToolTask {
                 pl_core::thread::task::TaskStatus::Interrupted
             }
         };
-        if self.task.id != task_id
+        if self.task.id != format!("task:{call_id}")
             || self.task.call_id != call_id
             || self.delivery.call_id != call_id
             || self.task.tool_id != self.delivery.tool_id
             || self.task.status != expected
+            || self.task.invocation.as_ref().is_some_and(|invocation| {
+                invocation.call_id != call_id || invocation.tool_id != self.task.tool_id
+            })
         {
             return Err(HistoryError::Integrity(
                 "native tool receipt identity or outcome mismatch".into(),
@@ -42,12 +43,12 @@ impl StoredToolTask {
     }
 }
 
-pub(in crate::studio) fn body(task: &TaskRecord, delivery: &ToolDelivery) -> Result<HistoryBody> {
+pub(crate) fn body(task: &TaskRecord, delivery: &ToolDelivery) -> Result<HistoryBody> {
     let saved = StoredToolTask {
         task: task.clone(),
         delivery: delivery.clone(),
     };
-    saved.validate(&task.id, &delivery.call_id)?;
+    saved.validate(&delivery.call_id)?;
     let mut body = HistoryBody::new(
         BODY_KEY,
         HistoryBodyRole::Other {
@@ -59,38 +60,55 @@ pub(in crate::studio) fn body(task: &TaskRecord, delivery: &ToolDelivery) -> Res
     Ok(body)
 }
 
-#[cfg(test)]
-pub(in crate::studio) async fn read(
-    reader: &HistoryReader,
-    task_id: &str,
-) -> Result<Option<DurableToolTask>> {
-    // This is the core's receipt format, checked again against the stored task identity below.
-    let Some(call_id) = task_id.strip_prefix("task:") else {
+/// Converts the retired receipt envelope at the history maintenance boundary.
+pub(crate) fn upgrade_v1_body(bytes: &[u8], call_id: &str) -> Result<HistoryBody> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Receipt<'a> {
+        task: TaskRecord,
+        #[serde(borrow)]
+        delivery: &'a RawValue,
+    }
+    let old: Receipt<'_> = serde_json::from_slice(bytes)?;
+    let delivery = super::tool_result_upgrade::decode_delivery(old.delivery.get().as_bytes())?;
+    StoredToolTask {
+        task: old.task.clone(),
+        delivery: delivery.clone(),
+    }
+    .validate(call_id)?;
+    body(&old.task, &delivery)
+}
+
+pub(crate) async fn read(reader: &HistoryReader, id: &str) -> Result<Option<DurableToolTask>> {
+    async fn by_call(reader: &HistoryReader, call_id: &str) -> Result<Option<StoredToolTask>> {
+        let original_id = crate::studio::thread_projection::order::tool_id(call_id);
+        let Some(bytes) = reader
+            .read_committed_tool_receipt(call_id.to_owned(), original_id, BODY_KEY)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let saved: StoredToolTask = serde_json::from_slice(&bytes)?;
+        saved.validate(call_id)?;
+        Ok(Some(saved))
+    }
+    if id.is_empty() {
         return Ok(None);
+    }
+    let by_task = match id
+        .strip_prefix("task:")
+        .filter(|call_id| !call_id.is_empty())
+    {
+        Some(call_id) => by_call(reader, call_id).await?,
+        None => None,
     };
-    let demand = HistoryDemand {
-        max_rows: 64,
-        max_bytes: 256 * 1024,
-    };
-    // The final event is keyed by call ID even when the timeline places it under an inbox
-    // message. Reading by tool entity can select the earlier background handoff receipt.
-    let original_id = crate::studio::thread_projection::order::tool_id(call_id);
-    let event = match reader.read_event(original_id, demand).await {
-        Ok(event) => event,
-        Err(HistoryError::NotFound(_)) => return Ok(None),
-        Err(error) => return Err(error),
-    };
-    if event.call_id.as_deref() != Some(call_id) {
+    let by_exact_call = by_call(reader, id).await?;
+    if by_task.is_some() && by_exact_call.is_some() {
         return Err(HistoryError::Integrity(
-            "tool original call identity mismatch".into(),
+            "ambiguous task and call identities".into(),
         ));
     }
-    let Some(bytes) = read_event_body_bytes(reader, &event, BODY_KEY, None).await? else {
-        return Ok(None);
-    };
-    let saved: StoredToolTask = serde_json::from_slice(&bytes)?;
-    saved.validate(task_id, call_id)?;
-    Ok(Some(DurableToolTask {
+    Ok(by_task.or(by_exact_call).map(|saved| DurableToolTask {
         task: saved.task,
         delivery: Some(saved.delivery),
     }))

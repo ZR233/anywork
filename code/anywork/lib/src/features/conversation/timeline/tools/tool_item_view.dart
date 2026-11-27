@@ -6,15 +6,21 @@ import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../state/timeline_display_unit.dart';
 import '../state/tool_presentation.dart';
+import 'support/tool_detail_values.dart';
 import '../widgets/timeline_activity_clock.dart';
 import '../widgets/timeline_activity_row.dart';
 import '../widgets/timeline_content_range_view.dart'
     show TimelineBodyReadQualification;
 import 'support/tool_detail_panel.dart';
-import 'support/tool_detail_values.dart';
 import 'support/tool_status_labels.dart';
 import 'tool_item_adapter.dart';
 import 'tool_item_registry.dart';
+
+typedef TimelineToolDataWindowRead = void Function(
+  String bodyKey,
+  int byteLength,
+  BodyWindow window,
+);
 
 /// Resolves the canonical localized title for [item].
 String timelineToolTitle(
@@ -120,6 +126,7 @@ class TimelineToolItemView extends StatefulWidget {
   final Object? declaredContentIdentity;
   final List<Widget> Function(
     ValueChanged<BodyWindow> onOutputRead,
+    TimelineToolDataWindowRead onToolDataRead,
     ToolAcceptanceProjection? acceptance,
   )?
   declaredContentBuilder;
@@ -231,40 +238,49 @@ class _TimelineToolItemViewState extends State<TimelineToolItemView> {
           final summary = _adapter.buildRowSummary(toolContext);
           final effectiveIcon = _controller.iconOverride ?? summary.icon;
 
-          final declaredContents = widget.declaredContentBuilder?.call((
-            window,
-          ) {
-            if (!mounted) return;
-            _controller.notifyOutputWindowRead(epoch, window, group: _group);
-          }, acceptance);
+          final declaredContents = widget.declaredContentBuilder?.call(
+            (window) {
+              if (!mounted) return;
+              _controller.notifyOutputWindowRead(epoch, window, group: _group);
+            },
+            (bodyKey, byteLength, window) {
+              if (!mounted) return;
+              _controller.notifyToolDataArtifactWindowRead(
+                epoch,
+                bodyKey,
+                byteLength,
+                window,
+                group: _group,
+              );
+            },
+            acceptance,
+          );
 
           final diagnostics = toolDiagnostics(context, item);
           final outputUnavailable =
               item.error?.trim().isNotEmpty == true &&
               item.error!.trim() == item.output.trim() &&
-              _adapter.bodyPolicy.readsStructuredOutput &&
+              _adapter.readsToolData &&
               _adapter
-                  .decodeOutput(l10n, item.output)
+                  .decodeOutputData(l10n, item.output, _controller.toolData)
                   .any((value) => value is ToolDetailUnavailable);
-          final inputValues = _adapter.decodeInput(l10n, item.arguments);
           final artifactValues = [
             for (final artifact in item.outputArtifacts)
               ..._adapter.decodeArtifacts(l10n, artifact),
           ];
-          final inlineBody = declaredContents == null
-              ? _adapter.buildInlineBody(toolContext, acceptance: acceptance)
-              : null;
+          final inlineBody = _adapter.buildInlineBody(
+            toolContext,
+            acceptance: acceptance,
+          );
+          final toolDataBody = _adapter.buildToolDataBody(
+            toolContext,
+            acceptance: acceptance,
+          );
 
           final panelChildren = <Widget>[
-            if (declaredContents == null)
-              ?inlineBody
-            else ...[
-              if (_adapter.showsDeclaredPrefixInput && inputValues.isNotEmpty)
-                TimelineToolSemanticBody(values: inputValues),
-              if (_adapter.bodyPolicy.readsArgumentsWindow ||
-                  _adapter.readsOutput(item.statusString, output: item.output))
-                ...declaredContents,
-            ],
+            ?inlineBody,
+            ?toolDataBody,
+            ...?declaredContents,
             if (artifactValues.isNotEmpty)
               TimelineToolSemanticBody(values: artifactValues),
             if (diagnostics.isNotEmpty)
@@ -281,6 +297,7 @@ class _TimelineToolItemViewState extends State<TimelineToolItemView> {
                         !_adapter.readsOutput(
                           item.statusString,
                           output: item.output,
+                          toolData: _controller.toolData,
                         )))
               Text(
                 error,
@@ -315,7 +332,15 @@ class _TimelineToolItemViewState extends State<TimelineToolItemView> {
               child: TimelineActivityDisclosure(
                 key: summary.disclosureKey,
                 initiallyExpanded: widget.initiallyExpanded,
-                onExpansionChanged: widget.onExpansionChanged,
+                onExpansionChanged: (expanded) {
+                  if (!expanded) {
+                    _controller.retireTransientState(notify: false);
+                  } else {
+                    // Rebind body callbacks to the epoch retired on collapse.
+                    setState(() {});
+                  }
+                  widget.onExpansionChanged?.call(expanded);
+                },
                 enabled: expandable,
                 titleBuilder: (context, expanded) => _buildRow(
                   context,

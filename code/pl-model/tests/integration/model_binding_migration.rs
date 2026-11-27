@@ -730,6 +730,7 @@ async fn assistant_request_reconstruction_requires_explicit_producer_preparation
             revision: 7,
             records: vec![
                 ContextRecord {
+                    tool_data: Default::default(),
                     id: "user".into(),
                     turn_id: None,
                     source: ContextSource::User,
@@ -739,6 +740,7 @@ async fn assistant_request_reconstruction_requires_explicit_producer_preparation
                     tool_calls: vec![],
                 },
                 ContextRecord {
+                    tool_data: Default::default(),
                     id: "source-attempt:output".into(),
                     turn_id: None,
                     source: ContextSource::Assistant,

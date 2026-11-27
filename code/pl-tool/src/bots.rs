@@ -1,7 +1,7 @@
 //! Core registration and payload mapping for the independent bot tools.
 use pl_agent_tool::typed::{TypedTool, decode_json};
 use pl_core::{
-    context::{ContextContent, OpaquePayload},
+    context::OpaquePayload,
     tool::{
         ToolOutput,
         opaque::{CallContext, Registration, ToolError},
@@ -139,11 +139,7 @@ where
     }
 }
 fn output(value: &impl serde::Serialize) -> Result<ToolOutput, ToolError> {
-    let encoded = serde_json::to_string(value).map_err(ToolError::new)?;
-    Ok(ToolOutput::new(
-        OpaquePayload::new("pl.studio.bot-tool", 1, encoded.clone()).map_err(ToolError::new)?,
-        vec![ContextContent::Text {
-            text: encoded.into(),
-        }],
-    ))
+    serde_json::to_value(value)
+        .map(ToolOutput::json)
+        .map_err(ToolError::new)
 }

@@ -61,18 +61,17 @@ impl ThreadToolItem {
 
     pub fn terminal_output(&self) -> Option<&ThreadToolOutput> {
         match &self.state {
-            ThreadToolState::Queued(_)
-            | ThreadToolState::Cancelling(_)
-            | ThreadToolState::Interrupted(_) => None,
+            ThreadToolState::Queued(_) | ThreadToolState::Cancelling(_) => None,
             ThreadToolState::Succeeded(state) => Some(&state.output),
             ThreadToolState::Failed(state) => state.output.as_ref(),
+            ThreadToolState::Interrupted(state) => state.output.as_ref(),
+            ThreadToolState::Cancelled(state) => state.output.as_ref(),
             ThreadToolState::Started(_)
             | ThreadToolState::Streaming(_)
             | ThreadToolState::AwaitingApproval(_)
             | ThreadToolState::Approved(_)
             | ThreadToolState::Running(_)
-            | ThreadToolState::Denied(_)
-            | ThreadToolState::Cancelled(_) => None,
+            | ThreadToolState::Denied(_) => None,
         }
     }
 }
@@ -397,17 +396,20 @@ impl CancellingThreadTool {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct InterruptedThreadTool {
     interrupted_at: i64,
     reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    output: Option<ThreadToolOutput>,
 }
 impl InterruptedThreadTool {
-    pub fn new(interrupted_at: i64, reason: String) -> Self {
+    pub fn new(interrupted_at: i64, reason: String, output: Option<ThreadToolOutput>) -> Self {
         Self {
             interrupted_at,
             reason,
+            output,
         }
     }
     pub fn interrupted_at(&self) -> i64 {
@@ -415,6 +417,10 @@ impl InterruptedThreadTool {
     }
     pub fn reason(&self) -> &str {
         &self.reason
+    }
+
+    pub fn output(&self) -> Option<&ThreadToolOutput> {
+        self.output.as_ref()
     }
 }
 
@@ -531,18 +537,21 @@ impl DeniedThreadTool {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CancelledThreadTool {
     cancelled_at: i64,
     reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    output: Option<ThreadToolOutput>,
 }
 
 impl CancelledThreadTool {
-    pub fn new(cancelled_at: i64, reason: String) -> Self {
+    pub fn new(cancelled_at: i64, reason: String, output: Option<ThreadToolOutput>) -> Self {
         Self {
             cancelled_at,
             reason,
+            output,
         }
     }
 
@@ -552,6 +561,10 @@ impl CancelledThreadTool {
 
     pub fn reason(&self) -> &str {
         &self.reason
+    }
+
+    pub fn output(&self) -> Option<&ThreadToolOutput> {
+        self.output.as_ref()
     }
 }
 

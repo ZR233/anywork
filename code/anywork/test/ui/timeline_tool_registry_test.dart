@@ -1,7 +1,14 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/timeline_feed_body_connector.dart';
+import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/state/chat_payload_reading.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
+import 'package:anywork/src/features/conversation/timeline/state/tool_data_artifact.dart';
 import 'package:anywork/src/features/conversation/timeline/state/tool_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/tools/items/acp/acp_tool_details_scope.dart';
 import 'package:anywork/src/features/conversation/timeline/tools/support/tool_detail_panel.dart';
@@ -9,6 +16,7 @@ import 'package:anywork/src/features/conversation/timeline/tools/support/tool_de
 import 'package:anywork/src/features/conversation/timeline/tools/tool_item_adapter.dart';
 import 'package:anywork/src/features/conversation/timeline/tools/tool_item_registry.dart';
 import 'package:anywork/src/features/conversation/timeline/tools/tool_item_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/l10n/app_localizations_en.dart';
@@ -38,6 +46,7 @@ TimelineToolPresentation _tool(
   String output, {
   String status = 'succeeded',
   String name = 'exec',
+  ToolDataArtifact toolData = const ToolDataArtifactAbsent(),
 }) => TimelineToolPresentation(
   id: 'semantic-tool',
   toolCallId: 'call',
@@ -46,14 +55,84 @@ TimelineToolPresentation _tool(
   statusString: status,
   arguments: arguments,
   output: output,
+  toolData: toolData,
   taskId: 'private-task',
   workingDirectory: '/private/cwd',
 );
+
+ChatItemPresentation _historyToolCard({
+  required String id,
+  required String name,
+  required String contract,
+  required String status,
+  required String arguments,
+  required String result,
+  required Object? toolData,
+  String? reason,
+  int? outputExitCode,
+  bool includeArtifact = true,
+}) {
+  final encodedArtifacts = jsonEncode([
+    {'toolData': toolData},
+  ]);
+  final bytes = utf8.encode(encodedArtifacts);
+  final reference = BodyRef(
+    databaseId: 'history-db',
+    ownerEventId: id,
+    bodyKey: 'tool.output-artifacts',
+    bodyId: '$id:tool.output-artifacts',
+    role: 'attachment',
+    byteLength: bytes.length,
+  );
+  final argumentBytes = utf8.encode(arguments);
+  final resultBytes = utf8.encode(result);
+  return ChatItemPresentation(
+    id: id,
+    compatibility: ChatItemCompatibility.current,
+    type: 'tool',
+    data: {
+      'invocation': {
+        'toolCallId': '$id-call',
+        'name': name,
+        'presentationContract': contract,
+      },
+      'state': {
+        'kind': status,
+        'reason': ?reason,
+        'output': {'attachments': <Object?>[], 'exitCode': ?outputExitCode},
+      },
+    },
+    bodies: [
+      ChatBodyPresentation(
+        key: 'tool.arguments',
+        byteLength: argumentBytes.length,
+        inline: Uint8List.fromList(argumentBytes),
+      ),
+      ChatBodyPresentation(
+        key: 'tool.result',
+        byteLength: resultBytes.length,
+        inline: Uint8List.fromList(resultBytes),
+      ),
+      if (includeArtifact)
+        ChatBodyPresentation(
+          key: 'tool.output-artifacts',
+          byteLength: bytes.length,
+          feedReference: reference,
+        ),
+    ],
+    presentationContract: contract,
+  );
+}
 
 String _visible(WidgetTester tester) => tester
     .widgetList<RichText>(find.byType(RichText))
     .map((widget) => widget.text.toPlainText())
     .join('\n');
+
+List<ToolDetailValue> _decodeOutputData(String contract, Object? data) =>
+    timelineToolItemRegistry
+        .lookupExact(contract)!
+        .decodeOutputData(_zh, '', ToolDataArtifactPresent(data));
 
 Widget _titleView(TimelineToolPresentation item, {required Locale locale}) =>
     _host(
@@ -201,16 +280,245 @@ class _ScopeIconAdapter extends TimelineToolItemAdapter {
 }
 
 void main() {
+  testWidgets('cold acceptance artifact reports its budget and keeps paging', (
+    tester,
+  ) async {
+    final data = {'messageAccepted': false, 'padding': 'x' * (64 * 1024)};
+    final encoded = jsonEncode([
+      {'toolData': data},
+    ]);
+    final bytes = utf8.encode(encoded);
+    final offsets = <int>[];
+    final item = _historyToolCard(
+      id: 'large-acceptance',
+      name: 'spawn_agent',
+      contract: 'builtin.spawn_agent@1',
+      status: 'cancelled',
+      arguments: '{"taskSummary":"Inspect files","profileId":"reviewer","message":"Check the change"}',
+      result: 'Observed before cancellation.',
+      toolData: data,
+    );
+    await tester.pumpWidget(
+      _host(
+        TimelineFeedContent(
+          identity: Object(),
+          isActive: () => true,
+          readBodyWindow: (reference, {required offset, required maxBytes}) {
+            offsets.add(offset);
+            final window = bytes.skip(offset).take(maxBytes).toList();
+            return Future.value(
+              BodyWindow(
+                offset: offset,
+                bytesBase64: base64Encode(window),
+                totalBytes: bytes.length,
+                eof: offset + window.length == bytes.length,
+              ),
+            );
+          },
+          child: ChatItemView(item: item, initiallyExpanded: true),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(_visible(tester), contains('64 KiB'));
+    expect(_visible(tester), contains('结构化数据未显示'));
+    final next = find.byKey(
+      StudioDriverKeys.timelineContentNextWindow(
+        'large-acceptance',
+        'tool.output-artifacts',
+      ),
+    );
+    await tester.ensureVisible(next);
+    await tester.tap(next);
+    await tester.pumpAndSettle();
+    expect(offsets, [0, 64 * 1024]);
+    expect(_visible(tester), contains('64 KiB'));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'cold artifact reloads after a local fold and ignores old reads',
+    (tester) async {
+      const data = {'value': 'body from the current read'};
+      final encoded = jsonEncode([
+        {'toolData': data},
+      ]);
+      final reads = <Completer<BodyWindow>>[];
+      final item = _historyToolCard(
+        id: 'reopened-artifact',
+        name: 'unknown_tool',
+        contract: 'generic@1',
+        status: 'succeeded',
+        arguments: '{}',
+        result: 'Author text.',
+        toolData: data,
+      );
+      await tester.pumpWidget(
+        _host(
+          TimelineFeedContent(
+            identity: Object(),
+            isActive: () => true,
+            readBodyWindow: (reference, {required offset, required maxBytes}) {
+              final completion = Completer<BodyWindow>();
+              reads.add(completion);
+              return completion.future;
+            },
+            child: ChatItemView(item: item, initiallyExpanded: true),
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(reads, hasLength(1));
+      await tester.tap(find.byType(TimelineActivityRow));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(TimelineActivityRow));
+      await tester.pump();
+      expect(reads, hasLength(2));
+      reads.first.complete(_fullWindow(encoded));
+      await tester.pump();
+      expect(_visible(tester), isNot(contains('body from the current read')));
+      reads.last.complete(_fullWindow(encoded));
+      await tester.pumpAndSettle();
+      expect(_visible(tester), contains('body from the current read'));
+      expect(reads, hasLength(2));
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'ChatItemView reads LSP and generic toolData through the feed BodyRef',
+    (tester) async {
+      final cases = [
+        (
+          name: 'lsp_query',
+          contract: 'builtin.lsp_query@1',
+          arguments: '{"operation":"hover","languageId":"dart"}',
+          result: 'author text differs from LSP data',
+          data: {
+            'operation': 'hover',
+            'result': 'semantic result from feed body',
+            'resultCount': 1,
+          },
+          visible: 'semantic result from feed body',
+        ),
+        (
+          name: 'unknown_tool',
+          contract: 'generic@1',
+          arguments: '{}',
+          result: 'author text differs from generic data',
+          data: {'value': 'generic result from feed body'},
+          visible: 'generic result from feed body',
+        ),
+        (
+          name: 'spawn_agent',
+          contract: 'builtin.spawn_agent@1',
+          arguments: '{"taskSummary":"Inspect files","profileId":"reviewer","message":"Check the change"}',
+          result: 'success output is intentionally omitted',
+          data: {'messageAccepted': false},
+          visible: '未接纳',
+        ),
+      ];
+      for (final scenario in cases) {
+        final encoded = jsonEncode([
+          {'toolData': scenario.data},
+        ]);
+        final item = _historyToolCard(
+          id: scenario.name,
+          name: scenario.name,
+          contract: scenario.contract,
+          status: 'succeeded',
+          arguments: scenario.arguments,
+          result: scenario.result,
+          toolData: scenario.data,
+        );
+        final reads = <BodyRef>[];
+        await tester.pumpWidget(
+          _host(
+            TimelineFeedContent(
+              identity: item,
+              isActive: () => true,
+              readBodyWindow:
+                  (reference, {required offset, required maxBytes}) {
+                    reads.add(reference);
+                    final bytes = utf8.encode(encoded);
+                    return Future.value(
+                      BodyWindow(
+                        offset: offset,
+                        text: utf8.decode(
+                          bytes.skip(offset).take(maxBytes).toList(),
+                        ),
+                        totalBytes: bytes.length,
+                        eof: offset + maxBytes >= bytes.length,
+                      ),
+                    );
+                  },
+              child: ChatItemView(item: item, initiallyExpanded: true),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(reads, hasLength(1));
+        expect(reads.single.bodyKey, 'tool.output-artifacts');
+        if (scenario.contract == 'generic@1') {
+          expect(_visible(tester), contains(scenario.result));
+        }
+        expect(_visible(tester), contains(scenario.visible));
+        if (scenario.contract == 'builtin.spawn_agent@1') {
+          expect(_visible(tester), isNot(contains(scenario.result)));
+        }
+        await tester.pumpWidget(const SizedBox.shrink());
+      }
+    },
+  );
+
+  test('cold history prefers state.output.exitCode without artifact data', () {
+    final item = _historyToolCard(
+      id: 'cold-exit',
+      name: 'exec_command',
+      contract: 'builtin.exec@2',
+      status: 'failed',
+      arguments: '{"command":"example"}',
+      result: 'author result',
+      toolData: null,
+      outputExitCode: 17,
+      includeArtifact: false,
+    );
+    final reading = readToolCard(item);
+    expect(reading, isA<DecodedToolCard>());
+    expect((reading as DecodedToolCard).value.exitCode, 17);
+    expect(reading.value.toolData, isA<ToolDataArtifactAbsent>());
+  });
+
+  test(
+    'pending artifact still uses the nonzero exit code from state.output',
+    () {
+      final item = _historyToolCard(
+        id: 'pending-exit',
+        name: 'exec_command',
+        contract: 'builtin.exec@2',
+        status: 'failed',
+        arguments: '{"command":"example"}',
+        result: 'author result',
+        toolData: null,
+        outputExitCode: 23,
+      );
+      final reading = readToolCard(item);
+      expect(reading, isA<DecodedToolCard>());
+      expect((reading as DecodedToolCard).value.exitCode, 23);
+      expect(reading.value.toolData, isA<ToolDataArtifactPending>());
+    },
+  );
+
   testWidgets(
     'acceptance owner ignores incomplete and retired callbacks across local identity generations',
     (tester) async {
       const rejected =
-          '{"accepted":false,"code":"staleRevision","recoveryAction":"Qualified rejection"}';
+          '[{"toolData":{"accepted":false,"code":"staleRevision","recoveryAction":"Qualified rejection"}}]';
       final bytes = utf8.encode(rejected);
       final group = TimelineExpansionIntent();
       final display = Object();
       group.setBodyVisible(display, true);
-      ValueChanged<BodyWindow>? callback;
+      TimelineToolDataWindowRead? callback;
       Widget owner(String reference, String contract, String id) => _host(
         TimelineGroupBodyIntent(
           intent: group,
@@ -222,11 +530,12 @@ void main() {
               presentationContract: contract,
               statusString: 'succeeded',
               arguments: '{"completion":{"reason":"ready","summary":"finished","evidence":[]}}',
-              output: '',
+              output: 'authored result text',
+              toolData: const ToolDataArtifactPending(),
             ),
             declaredContentIdentity: reference,
-            declaredContentBuilder: (onRead, _) {
-              callback = onRead;
+            declaredContentBuilder: (_, onToolDataRead, _) {
+              callback = onToolDataRead;
               return const [Text('Declared range')];
             },
           ),
@@ -237,6 +546,8 @@ void main() {
       );
       await tester.pumpAndSettle();
       final first = callback!;
+      void deliver(TimelineToolDataWindowRead reader, BodyWindow window) =>
+          reader('tool.output-artifacts', bytes.length, window);
       for (final window in [
         BodyWindow(
           offset: 2,
@@ -251,12 +562,12 @@ void main() {
           eof: false,
         ),
       ]) {
-        first(window);
+        deliver(first, window);
         await tester.pumpAndSettle();
         expect(_row(tester).label, contains('结果待确认'));
         expect(_row(tester).isIssue, isFalse);
       }
-      first(_fullWindow(rejected));
+      deliver(first, _fullWindow(rejected));
       await tester.pumpAndSettle();
       expect(_row(tester).isIssue, isTrue);
       for (final (ref, contract, id) in [
@@ -268,23 +579,23 @@ void main() {
         await tester.pumpWidget(owner(ref, contract, id));
         await tester.pumpAndSettle();
         expect(_row(tester).label, contains('结果待确认'));
-        previous(_fullWindow(rejected));
+        deliver(previous, _fullWindow(rejected));
         await tester.pumpAndSettle();
         expect(_row(tester).isIssue, isFalse);
       }
       final active = callback!;
-      active(_fullWindow(rejected));
+      deliver(active, _fullWindow(rejected));
       await tester.pumpAndSettle();
       expect(_row(tester).isIssue, isTrue);
       group.setBodyVisible(display, false);
       group.setBodyVisible(display, true);
       await tester.pumpAndSettle();
       expect(_row(tester).label, contains('结果待确认'));
-      active(_fullWindow(rejected));
+      deliver(active, _fullWindow(rejected));
       await tester.pumpAndSettle();
       expect(_row(tester).isIssue, isFalse);
       group.setBodyVisible(display, false);
-      callback!(_fullWindow(rejected));
+      deliver(callback!, _fullWindow(rejected));
       await tester.pumpAndSettle();
       expect(_row(tester).isIssue, isFalse);
       await tester.pumpWidget(const SizedBox.shrink());
@@ -293,41 +604,91 @@ void main() {
     },
   );
 
-  test('truncated structured search, plan and workflow windows never fall back to raw text', () {
-    for (final (contract, complete, secret) in [
+  testWidgets('structured output waits for the complete artifact body window', (
+    tester,
+  ) async {
+    const artifacts =
+        '[{"toolData":{"taskId":"task:command","exitCode":7,"stdout":"window output\\n","stderr":""}}]';
+    final bytes = utf8.encode(artifacts);
+    TimelineToolDataWindowRead? onToolDataRead;
+    await tester.pumpWidget(
+      _host(
+        TimelineToolItemView(
+          item: TimelineToolPresentation(
+            id: 'deferred-exec',
+            toolCallId: 'deferred-exec-call',
+            name: 'exec_command',
+            presentationContract: 'builtin.exec@2',
+            statusString: 'failed',
+            arguments: '{"command":"fixture"}',
+            output: 'The authored result stays separate from artifact data.',
+            toolData: const ToolDataArtifactPending(),
+          ),
+          declaredContentIdentity: 'artifact-ref',
+          initiallyExpanded: true,
+          declaredContentBuilder: (_, callback, _) {
+            onToolDataRead = callback;
+            return const [SizedBox.shrink()];
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final split = bytes.length ~/ 2;
+    onToolDataRead!(
+      'tool.output-artifacts',
+      bytes.length,
+      BodyWindow(
+        offset: 0,
+        text: utf8.decode(bytes.sublist(0, split)),
+        totalBytes: bytes.length,
+        eof: false,
+      ),
+    );
+    await tester.pump();
+    expect(_visible(tester), isNot(contains('7')));
+    expect(
+      _visible(tester),
+      contains('The authored result stays separate from artifact data.'),
+    );
+    await tester.tap(find.byType(TimelineActivityRow));
+    await tester.pumpAndSettle();
+    onToolDataRead!(
+      'tool.output-artifacts',
+      bytes.length,
+      BodyWindow(
+        offset: split,
+        text: utf8.decode(bytes.sublist(split)),
+        totalBytes: bytes.length,
+        eof: true,
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(_visible(tester), isNot(contains('window output')));
+    expect(_visible(tester), isNot(contains('task:command')));
+    expect(tester.takeException(), isNull);
+  });
+
+  test('tool result JSON remains authored text without explicit toolData', () {
+    for (final (contract, complete) in [
       (
         'builtin.search_session_note@1',
         '{"matches":[{"line":2,"text":"match","before":[],"after":[]}],"contentHash":"private-search-hash","count":1}',
-        'private-search-hash',
       ),
       (
         'builtin.plan_current@1',
         '{"revision":1,"state":"approved","document":{"version":1,"markdown":"# Plan","contentHash":"private-plan-hash"},"allowedTransitions":[]}',
-        'private-plan-hash',
       ),
       (
         'builtin.workflow_transition@1',
         '{"accepted":false,"code":"staleRevision","snapshot":{"runId":"private-run"},"recoveryAction":"Read canonical state"}',
-        'private-run',
       ),
     ]) {
       final adapter = timelineToolItemRegistry.lookupExact(contract)!;
       expect(adapter.bodyPolicy.readsStructuredOutput, isTrue);
-      final cuts = [
-        complete.indexOf(secret) + secret.length,
-        complete.length - 1,
-      ];
-      for (final cut in cuts) {
-        final partial = complete.substring(0, cut);
-        final values = adapter.decodeOutput(_zh, partial);
-        expect(
-          values.whereType<ToolDetailText>(),
-          isEmpty,
-          reason: '$contract at $cut',
-        );
-        expect(values.single, isA<ToolDetailUnavailable>());
-        expect(adapter.decodeAcceptance(partial).state, ToolAcceptance.pending);
-      }
+      final values = adapter.decodeOutput(_zh, complete);
+      expect(values.whereType<ToolDetailText>().single.text, complete);
+      expect(adapter.decodeAcceptance(complete).state, ToolAcceptance.pending);
     }
     final text = timelineToolItemRegistry
         .lookupExact('generic@1')!
@@ -354,23 +715,6 @@ void main() {
     (tester) async {
       const rejected =
           '{"accepted":false,"code":"staleRevision","snapshot":{"runId":"private-run"},"recoveryAction":"Inspect canonical state and retry"}';
-      final adapter = timelineToolItemRegistry.lookupExact(
-        'builtin.workflow_transition@1',
-      )!;
-      expect(adapter.readsOutput('succeeded', output: rejected), isTrue);
-      expect(
-        adapter.readsOutput(
-          'succeeded',
-          output: '{"accepted":true,"snapshot":{"runId":"private-run"}}',
-        ),
-        isFalse,
-      );
-      expect(
-        adapter.readsOutput('succeeded'),
-        isTrue,
-        reason:
-            'Deferred results must be read before their acceptance is known',
-      );
       await tester.pumpWidget(
         _host(
           TimelineToolItemView(
@@ -378,6 +722,11 @@ void main() {
               'builtin.workflow_transition@1',
               '{"completion":{"reason":"ready","summary":"finished","evidence":[]}}',
               rejected,
+              toolData: const ToolDataArtifactPresent({
+                'accepted': false,
+                'code': 'staleRevision',
+                'recoveryAction': 'Inspect canonical state and retry',
+              }),
             ),
             initiallyExpanded: true,
           ),
@@ -483,12 +832,21 @@ void main() {
   });
 
   test('canonical media and wait receipts retain structured results and partial failures', () {
-    final media = timelineToolItemRegistry
-        .lookupExact('builtin.show_files@1')!
-        .decodeOutput(
-          _zh,
-          '{"caption":"Read this","files":[{"status":"ready","filename":"visible.pdf","resource":{"id":"private"}},{"status":"failed","filename":"missing.pdf","message":"Original missing file error"}]}',
-        );
+    final media = _decodeOutputData('builtin.show_files@1', {
+      'caption': 'Read this',
+      'files': [
+        {
+          'status': 'ready',
+          'filename': 'visible.pdf',
+          'resource': {'id': 'private'},
+        },
+        {
+          'status': 'failed',
+          'filename': 'missing.pdf',
+          'message': 'Original missing file error',
+        },
+      ],
+    });
     expect(
       media.whereType<ToolDetailText>().map((value) => value.text),
       containsAll([
@@ -498,49 +856,62 @@ void main() {
         '已失败',
       ]),
     );
-    final wait = timelineToolItemRegistry
-        .lookupExact('builtin.wait@1')!
-        .decodeOutput(
-          _zh,
-          '{"tasks":[{"taskId":"private","status":"failed"}],"messagesReady":true,"timedOut":false}',
-        );
+    final wait = _decodeOutputData('builtin.wait@1', {
+      'tasks': [
+        {'taskId': 'private', 'status': 'failed'},
+      ],
+      'messagesReady': true,
+      'timedOut': false,
+    });
     expect(
       wait.whereType<ToolDetailText>().map((value) => value.text),
       contains('已失败'),
     );
-    final emptySearch = timelineToolItemRegistry
-        .lookupExact('builtin.search_session_note@1')!
-        .decodeOutput(_zh, '{"matches":[],"count":0,"nextCursor":null}');
+    final emptySearch = _decodeOutputData('builtin.search_session_note@1', {
+      'matches': <Object?>[],
+      'count': 0,
+      'nextCursor': null,
+    });
     expect(emptySearch.whereType<ToolDetailUnavailable>(), isEmpty);
   });
 
   test('canonical filesystem and plan results preserve semantic fields instead of internal revisions', () {
-    final stat = timelineToolItemRegistry
-        .lookupExact('builtin.stat_path@1')!
-        .decodeOutput(
-          _zh,
-          '{"path":"a.txt","exists":true,"type":"file","len":23,"readonly":true}',
-        );
+    final stat = _decodeOutputData('builtin.stat_path@1', {
+      'path': 'a.txt',
+      'exists': true,
+      'type': 'file',
+      'len': 23,
+      'readonly': true,
+    });
     expect(
       stat.whereType<ToolDetailText>().map((value) => value.text),
       containsAll(['文件', '23', '是']),
     );
-    final plan = timelineToolItemRegistry
-        .lookupExact('builtin.plan_current@1')!
-        .decodeOutput(
-          _zh,
-          '{"revision":32,"state":"approved","document":{"version":4,"markdown":"approved implementation","contentHash":"private-hash"},"allowedTransitions":[]}',
-        );
+    final plan = _decodeOutputData('builtin.plan_current@1', {
+      'revision': 32,
+      'state': 'approved',
+      'document': {
+        'version': 4,
+        'markdown': 'approved implementation',
+        'contentHash': 'private-hash',
+      },
+      'allowedTransitions': <Object?>[],
+    });
     expect(
       plan.whereType<ToolDetailText>().map((value) => value.text),
       containsAll(['已批准', 'approved implementation']),
     );
-    final workflow = timelineToolItemRegistry
-        .lookupExact('builtin.workflow_current@1')!
-        .decodeOutput(
-          _zh,
-          '{"runId":"private","currentState":{"id":"state-id","title":"Implementation","instructions":"Change one owner","completionCriteria":["Tests pass"],"kind":"atomic"},"lifecycle":"active"}',
-        );
+    final workflow = _decodeOutputData('builtin.workflow_current@1', {
+      'runId': 'private',
+      'currentState': {
+        'id': 'state-id',
+        'title': 'Implementation',
+        'instructions': 'Change one owner',
+        'completionCriteria': ['Tests pass'],
+        'kind': 'atomic',
+      },
+      'lifecycle': 'active',
+    });
     expect(
       workflow.whereType<ToolDetailText>().map((value) => value.text),
       containsAll(['Implementation', 'Change one owner', 'Tests pass', '进行中']),
@@ -558,7 +929,12 @@ void main() {
           presentationContract: 'builtin.exec@2',
           statusString: status,
           arguments: '{"command":"failing program"}',
-          output: '{"stderr":{"content":"original stderr"},"exitCode":7,"diagnostic":{"detail":"original diagnostic"}}',
+          output: '[exit 7]',
+          toolData: const ToolDataArtifactPresent({
+            'stderr': 'original stderr',
+            'exitCode': 7,
+            'diagnostic': {'detail': 'original diagnostic'},
+          }),
           error: 'original reason',
           exitCode: 7,
           timedOut: status == 'failed',
@@ -824,6 +1200,12 @@ void main() {
               '{}',
               output,
               status: 'succeeded',
+              toolData: output.isEmpty
+                  ? const ToolDataArtifactAbsent()
+                  : const ToolDataArtifactPresent({
+                      'accepted': false,
+                      'code': 'staleRevision',
+                    }),
             ),
             locale: locale,
           ),
@@ -901,8 +1283,12 @@ void main() {
                 .single
             as ToolDetailUnavailable;
     expect(pendingZh.reason, _zh.timelineToolAcceptanceUnavailable);
-    final rejected = workflow.decodeAcceptance(
-      '{"accepted":false,"code":"staleRevision","recoveryAction":"Inspect the current workflow and retry"}',
+    final rejected = workflow.decodeAcceptanceData(
+      const ToolDataArtifactPresent({
+        'accepted': false,
+        'code': 'staleRevision',
+        'recoveryAction': 'Inspect the current workflow and retry',
+      }),
     );
     final rejectionDetails = workflow
         .acceptanceDetails(_en, rejected)
@@ -962,10 +1348,21 @@ void main() {
       adapter.decodeInput(_zh, '{"command":3}').single,
       isA<ToolDetailUnavailable>(),
     );
-    expect(
-      adapter.decodeOutput(_zh, '{"taskId":"private","stdout":').single,
-      isA<ToolDetailUnavailable>(),
-    );
+    for (final invalidStream in <Object>[
+      42,
+      {'content': 'obsolete stream wrapper'},
+    ]) {
+      expect(
+        adapter
+            .decodeOutputData(
+              _zh,
+              'result text',
+              ToolDataArtifactPresent({'stdout': invalidStream}),
+            )
+            .single,
+        isA<ToolDetailUnavailable>(),
+      );
+    }
     expect(
       timelineToolItemRegistry
           .lookupExact('generic@1')!
@@ -977,11 +1374,12 @@ void main() {
   test('execution result preserves streams, numeric signal and structured denial instead of its transport envelope', () {
     final values = timelineToolItemRegistry
         .lookupExact('builtin.exec@2')!
-        .decodeOutput(
+        .decodeOutputData(
           _zh,
-          jsonEncode({
-            'stdout': {'content': 'out'},
-            'stderr': {'content': 'err'},
+          'authored result text',
+          ToolDataArtifactPresent({
+            'stdout': 'out',
+            'stderr': 'err',
             'exitCode': 7,
             'signal': 9,
             'taskId': 'private',
@@ -1000,6 +1398,128 @@ void main() {
     expect(values.whereType<ToolDetailUnavailable>(), isEmpty);
   });
 
+  testWidgets('Rust-produced toolData drives exec and terminal result cards', (
+    tester,
+  ) async {
+    final fixture = jsonDecode(
+      File('test/fixtures/tool_data_rust.json').readAsStringSync(),
+    ) as List<Object?>;
+    Map<String, Object?> sample(String name) => fixture
+        .cast<Map<String, Object?>>()
+        .singleWhere((entry) => entry['name'] == name);
+    ToolDataArtifact artifactData(Map<String, Object?> entry) {
+      final output = entry['output'] as Map<String, Object?>;
+      final artifacts = output['outputArtifacts'];
+      return ToolDataArtifact.parseArtifacts(
+        artifacts == null ? const <String>[] : [jsonEncode(artifacts)],
+      );
+    }
+
+    final exec = sample('exec_nonzero');
+    final execOutput = exec['output'] as Map<String, Object?>;
+    final execItem = TimelineToolPresentation(
+      id: 'exec-fixture',
+      toolCallId: 'exec-fixture-call',
+      name: 'exec_command',
+      presentationContract: 'builtin.exec@2',
+      statusString: exec['outcome'] as String,
+      arguments: '{"command":"fixture"}',
+      output: execOutput['result'] as String,
+      toolData: artifactData(exec),
+    );
+    await tester.pumpWidget(
+      _host(TimelineToolItemView(item: execItem, initiallyExpanded: true)),
+    );
+    await tester.pumpAndSettle();
+    final execText = _visible(tester);
+    expect(execText, contains('hello'));
+    expect(execText, contains('failure'));
+    expect(execText, contains('7'));
+    expect(execText, isNot(contains('task:command')));
+    expect(tester.takeException(), isNull);
+
+    final stdin = sample('stdin_terminal');
+    final stdinOutput = stdin['output'] as Map<String, Object?>;
+    final stdinItem = TimelineToolPresentation(
+      id: 'stdin-fixture',
+      toolCallId: 'stdin-fixture-call',
+      name: 'write_stdin',
+      presentationContract: 'builtin.write_stdin@1',
+      statusString: stdin['outcome'] as String,
+      arguments: '{"chars":"continue"}',
+      output: stdinOutput['result'] as String,
+      toolData: artifactData(stdin),
+    );
+    await tester.pumpWidget(
+      _host(TimelineToolItemView(item: stdinItem, initiallyExpanded: true)),
+    );
+    await tester.pumpAndSettle();
+    expect(_visible(tester), contains('Target is terminal.'));
+    expect(_visible(tester), isNot(contains('task:stdin')));
+    expect(tester.takeException(), isNull);
+
+    final cancelledData = artifactData(sample('exec_nonzero'));
+    for (final status in ['cancelled', 'interrupted']) {
+      final item = TimelineToolPresentation(
+        id: 'exec-$status',
+        toolCallId: 'exec-$status-call',
+        name: 'exec_command',
+        presentationContract: 'builtin.exec@2',
+        statusString: status,
+        arguments: '{"command":"fixture"}',
+        output: 'Observed terminal text body',
+        error: 'The operator stopped execution',
+        toolData: cancelledData,
+      );
+      await tester.pumpWidget(
+        _host(TimelineToolItemView(item: item, initiallyExpanded: true)),
+      );
+      await tester.pumpAndSettle();
+      final visible = _visible(tester);
+      expect(visible, contains('hello'));
+      expect(visible, contains('Observed terminal text body'));
+      expect(visible, contains('The operator stopped execution'));
+      expect(
+        _row(tester).label,
+        contains(status == 'cancelled' ? '已取消' : '已停止'),
+      );
+      expect(
+        item.outcome,
+        status == 'cancelled'
+            ? TimelineToolOutcome.cancelled
+            : TimelineToolOutcome.interrupted,
+      );
+      expect(tester.takeException(), isNull);
+    }
+
+    final generic = timelineToolItemRegistry.lookupExact('generic@1')!;
+    final nullCase = sample('null');
+    final emptyArray = sample('empty_array');
+    final emptyObject = sample('empty_object');
+    final textCase = sample('text');
+    List<String> visibleData(Map<String, Object?> entry) {
+      final result =
+          (entry['output'] as Map<String, Object?>)['result'] as String;
+      return generic
+          .decodeOutputData(_zh, result, artifactData(entry))
+          .whereType<ToolDetailText>()
+          .map((value) => value.text)
+          .toList();
+    }
+
+    final absentText =
+        (sample('absent')['output'] as Map<String, Object?>)['result']
+            as String;
+    final absent = generic.decodeOutput(_zh, absentText);
+    expect(visibleData(nullCase), ['null']);
+    expect(visibleData(emptyArray), ['[]']);
+    expect(visibleData(emptyObject), ['{}']);
+    expect(visibleData(textCase), ['{"only":"text"}']);
+    expect(absent.whereType<ToolDetailText>().map((value) => value.text), [
+      '{"pretend":"data"}',
+    ]);
+  });
+
   test('writing empty user content remains valid and mutation success does not repeat receipts', () {
     final adapter = timelineToolItemRegistry.lookupExact(
       'builtin.write_file@1',
@@ -1013,7 +1533,16 @@ void main() {
     expect(adapter.readsOutput('succeeded'), isFalse);
     expect(adapter.readsOutput('denied'), isTrue);
     expect(
-      adapter.decodeOutput(_zh, '{"error":"denied","taskId":"private"}').single,
+      adapter
+          .decodeOutputData(
+            _zh,
+            'denied',
+            const ToolDataArtifactPresent({
+              'error': 'denied',
+              'taskId': 'private',
+            }),
+          )
+          .single,
       isA<ToolDetailText>().having((value) => value.text, 'error', 'denied'),
     );
   });
@@ -1027,7 +1556,13 @@ void main() {
             item: _tool(
               'builtin.exec@2',
               '{"command":"printf proof\\nprintf second","cwd":"hidden"}',
-              '{"stdout":{"content":"program output"},"stderr":{"content":""},"exitCode":0,"taskId":"hidden"}',
+              'program output',
+              toolData: const ToolDataArtifactPresent({
+                'stdout': 'program output',
+                'stderr': '',
+                'exitCode': 0,
+                'taskId': 'hidden',
+              }),
             ),
             initiallyExpanded: true,
           ),
@@ -1336,7 +1871,11 @@ void main() {
               presentationContract: 'builtin.exec@2',
               statusString: 'succeeded',
               arguments: '{"command":"cargo test"}',
-              output: '{"stdout":{"content":"ok"},"exitCode":0}',
+              output: 'ok',
+              toolData: const ToolDataArtifactPresent({
+                'stdout': 'ok',
+                'exitCode': 0,
+              }),
               createdAt: created,
               completedAt: completed,
             ),
@@ -1356,7 +1895,8 @@ void main() {
               presentationContract: 'builtin.write_stdin@1',
               statusString: 'succeeded',
               arguments: '{"chars":"continue"}',
-              output: '{"stdout":{"content":"resumed"}}',
+              output: 'resumed',
+              toolData: const ToolDataArtifactPresent({'stdout': 'resumed'}),
               createdAt: created,
               completedAt: completed,
             ),
@@ -1666,6 +2206,10 @@ void main() {
                 {'id': 'a2', 'role': 'verifier', 'status': 'idle'},
               ]),
               name: 'list_agents',
+              toolData: const ToolDataArtifactPresent([
+                {'id': 'a1', 'role': 'researcher', 'status': 'running'},
+                {'id': 'a2', 'role': 'verifier', 'status': 'idle'},
+              ]),
             ),
           ),
         ),
@@ -1691,6 +2235,14 @@ void main() {
               }),
               '{}',
               name: 'evaluate_agent',
+              toolData: const ToolDataArtifactPresent({
+                'target': 'thread-66137cebcce11-a',
+                'role': 'rust-worker',
+                'outcome': 'passed',
+                'quality': 5,
+                'instructionFollowing': 5,
+                'comment': '全部契约与单测通过',
+              }),
             ),
           ),
         ),
@@ -1748,7 +2300,11 @@ void main() {
               presentationContract: 'builtin.exec@2',
               statusString: 'failed',
               arguments: '{"command":"cargo test -p pl-core"}',
-              output: '{"stderr":{"content":"boom"},"exitCode":2}',
+              output: 'boom',
+              toolData: const ToolDataArtifactPresent({
+                'stderr': {'content': 'boom'},
+                'exitCode': 2,
+              }),
               exitCode: 2,
               createdAt: created,
               completedAt: completed,
@@ -1807,6 +2363,9 @@ void main() {
               '{"messageAccepted":false}',
               status: 'succeeded',
               name: 'spawn_agent',
+              toolData: const ToolDataArtifactPresent({
+                'messageAccepted': false,
+              }),
             ),
           ),
         ),

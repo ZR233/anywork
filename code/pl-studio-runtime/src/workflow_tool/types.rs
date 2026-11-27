@@ -62,7 +62,7 @@ pub struct WorkflowPreviewSnapshot {
 }
 
 /// 当前 run 的主生命周期。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum WorkflowRunLifecycle {
     Active,
@@ -70,7 +70,7 @@ pub enum WorkflowRunLifecycle {
 }
 
 /// 一次已提交的状态转换事实。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowTransitionRecord {
     pub revision: u64,
@@ -109,7 +109,7 @@ pub struct WorkflowRun {
 }
 
 /// 已从热状态归档的 run 摘要。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowRunArchive {
     pub lineage_id: String,
@@ -151,7 +151,7 @@ pub struct WorkflowSessionState {
 }
 
 /// Summary of one valid state in the workflow graph.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowStateBrief {
     pub id: String,
@@ -160,7 +160,7 @@ pub struct WorkflowStateBrief {
 }
 
 /// Allowed direct transition option from the current workflow state.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowAllowedTransition {
     pub target_state_id: String,
@@ -170,7 +170,7 @@ pub struct WorkflowAllowedTransition {
 }
 
 /// Rich diagnostic payload returned when `workflow_transition` is rejected.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowTransitionError {
     pub code: String,

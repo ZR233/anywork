@@ -1,9 +1,8 @@
-import 'dart:convert';
-
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../../../l10n/app_localizations.dart';
 import '../../../../../../shared/typed_json.dart';
+import '../../../state/tool_data_artifact.dart';
 import '../../../state/tool_presentation.dart';
 import '../../support/agent_result_support.dart';
 import '../../support/structured_tool_adapter.dart';
@@ -49,24 +48,21 @@ class ListAgentsToolItem extends StructuredTimelineToolAdapter {
 
   @override
   String? rowTarget(AppLocalizations l10n, TimelineToolPresentation item) {
-    final count = _extractAgentCount(item.output);
+    final result = switch (item.toolData) {
+      ToolDataArtifactPresent(:final value) => value,
+      _ => null,
+    };
+    final count = _extractAgentCount(result);
     if (count == null) return null;
     return '($count)';
   }
 
-  static int? _extractAgentCount(String rawOutput) {
-    final trimmed = rawOutput.trim();
-    if (trimmed.isEmpty) return null;
-    try {
-      final decoded = jsonDecode(trimmed);
-      if (decoded is List) return decoded.length;
-      if (decoded is Map) {
-        if (decoded['agents'] case final List agents) return agents.length;
-        if (decoded['items'] case final List items) return items.length;
-        if (decoded['count'] case final int count) return count;
-      }
-    } on FormatException {
-      return null;
+  static int? _extractAgentCount(Object? decoded) {
+    if (decoded is List) return decoded.length;
+    if (decoded is Map) {
+      if (decoded['agents'] case final List agents) return agents.length;
+      if (decoded['items'] case final List items) return items.length;
+      if (decoded['count'] case final int count) return count;
     }
     return null;
   }

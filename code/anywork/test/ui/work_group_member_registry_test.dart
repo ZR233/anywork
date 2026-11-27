@@ -1,7 +1,10 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/timeline_feed_body_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/state/tool_data_artifact.dart';
 import 'package:anywork/src/features/conversation/timeline/tools/tool_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
@@ -22,6 +25,8 @@ import 'package:anywork/src/shared/studio_code_block.dart';
 import 'package:anywork_client/models.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
+
+import '../support/chat_fixtures.dart';
 
 Widget _host(Widget child, {Locale locale = const Locale('zh')}) => MaterialApp(
   theme: pureStudioTheme(),
@@ -54,6 +59,150 @@ String _showFilesEnvelope() => jsonEncode({
 });
 
 void main() {
+  testWidgets(
+    'stopped work-group tool keeps authored result, reason, and BodyRef data',
+    (tester) async {
+      const data = {'messageAccepted': false};
+      final artifacts = jsonEncode([
+        {'toolData': data},
+      ]);
+      final artifactBytes = utf8.encode(artifacts);
+      final artifactRef = BodyRef(
+        databaseId: 'history-db',
+        ownerEventId: 'stopped-member',
+        bodyKey: 'tool.output-artifacts',
+        bodyId: 'stopped-member:tool.output-artifacts',
+        role: 'attachment',
+        byteLength: artifactBytes.length,
+      );
+      final payload = jsonEncode({
+        'contract': 'anywork.chat/1',
+        'type': 'tool',
+        'data': {
+          'invocation': {
+            'toolCallId': 'stopped-call',
+            'name': 'spawn_agent',
+            'presentationContract': 'builtin.spawn_agent@1',
+          },
+          'state': {
+            'kind': 'cancelled',
+            'reason': 'user stopped the task',
+            'output': {'attachments': <Object?>[]},
+          },
+        },
+        'bodies': [
+          inlineBody('tool.arguments', '{"taskSummary":"Inspect files"}'),
+          inlineBody('tool.result', 'Author result kept intact.'),
+        ],
+      });
+      final member = WorkGroupToolCall(
+        id: 'stopped-member',
+        seq: 1,
+        callId: 'stopped-call',
+        toolName: 'spawn_agent',
+        presentationContract: 'builtin.spawn_agent@1',
+        status: 'cancelled',
+        summary: 'Inspect files',
+        payloadJson: payload,
+        bodies: [artifactRef],
+      );
+      final reads = <BodyRef>[];
+      await tester.pumpWidget(
+        _host(
+          TimelineFeedContent(
+            identity: member,
+            isActive: () => true,
+            readBodyWindow: (reference, {required offset, required maxBytes}) {
+              reads.add(reference);
+              return Future.value(
+                BodyWindow(
+                  offset: offset,
+                  text: utf8.decode(
+                    artifactBytes.skip(offset).take(maxBytes).toList(),
+                  ),
+                  totalBytes: artifactBytes.length,
+                  eof: offset + maxBytes >= artifactBytes.length,
+                ),
+              );
+            },
+            child: WorkGroupMemberView(member: member, initiallyExpanded: true),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final row = tester.widget<TimelineActivityRow>(
+        find.byType(TimelineActivityRow).first,
+      );
+      expect(row.label, contains('取消'));
+      expect(row.label, isNot(contains('未接纳')));
+      expect(reads, hasLength(1));
+      expect(reads.single, artifactRef);
+      expect(
+        workGroupToolPresentationFromMember(member).output,
+        'Author result kept intact.',
+      );
+      expect(find.text('Author result kept intact.'), findsOneWidget);
+      expect(find.text('user stopped the task'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  test('work-group tool cards read producer toolData and keep result text separate', () {
+    final fixture = jsonDecode(
+      File('test/fixtures/tool_data_rust.json').readAsStringSync(),
+    ) as List<Object?>;
+    final exec = fixture.cast<Map<String, Object?>>().singleWhere(
+      (entry) => entry['name'] == 'exec_nonzero',
+    );
+    final output = exec['output'] as Map<String, Object?>;
+    final artifacts = output['outputArtifacts'] as List<Object?>;
+    final payload = jsonEncode({
+      'contract': 'anywork.chat/1',
+      'type': 'tool',
+      'data': {
+        'invocation': {
+          'toolCallId': 'exec-call',
+          'name': 'exec_command',
+          'presentationContract': 'builtin.exec@2',
+        },
+        'state': {
+          'kind': 'failed',
+          'failedAt': 2,
+          'output': {'attachments': <Object?>[]},
+        },
+      },
+      'bodies': [
+        inlineBody('tool.arguments', '{"command":"fixture"}'),
+        inlineBody('tool.result', output['result'] as String),
+        inlineBody('tool.output-artifacts', jsonEncode(artifacts)),
+      ],
+    });
+    final member = WorkGroupToolCall(
+      id: 'exec-member',
+      seq: 1,
+      callId: 'exec-call',
+      toolName: 'exec_command',
+      presentationContract: 'builtin.exec@2',
+      status: 'failed',
+      summary: 'exec_command',
+      payloadJson: payload,
+      bodies: const [],
+      startedAtMs: 1,
+      finishedAtMs: 2,
+    );
+
+    final presentation = workGroupToolPresentationFromMember(member);
+    expect(presentation.toolData, isA<ToolDataArtifactPresent>());
+    final data = (presentation.toolData as ToolDataArtifactPresent).value;
+    expect(data, {
+      'taskId': 'task:command',
+      'exitCode': 7,
+      'stdout': 'hello\n',
+      'stderr': 'failure\n',
+    });
+    expect(presentation.output, output['result']);
+  });
+
   test(
     'timelineMarkdownPlainText strips markdown markers and folds newlines',
     () {

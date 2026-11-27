@@ -6,6 +6,7 @@ import 'chat_item_presentation.dart';
 import '../tools/items/wait/sleep_tool_item.dart';
 import '../tools/items/wait/wait_tool_item.dart';
 import '../tools/tool_item_registry.dart';
+import 'tool_data_artifact.dart';
 import 'tool_presentation.dart';
 
 Map<String, Object?> chatObject(Object? value, String field) {
@@ -144,6 +145,19 @@ ToolCardReading readToolCard(ChatItemPresentation item, {String? arguments}) {
       _ => null,
     };
     final artifacts = item.inlineText('tool.output-artifacts');
+    final artifactBody = item.body('tool.output-artifacts');
+    final toolData = ToolDataArtifact.parseArtifacts(
+      artifacts == null ? const [] : [artifacts],
+      deferred: artifactBody?.hasReference ?? false,
+    );
+    final dataExitCode = switch (toolData) {
+      ToolDataArtifactPresent(value: final Map value) =>
+        value['exitCode'] is int ? value['exitCode'] as int : null,
+      _ => null,
+    };
+    final stateExitCode = output?['exitCode'] is int
+        ? output!['exitCode'] as int
+        : null;
     return DecodedToolCard(
       TimelineToolPresentation(
         id: item.id,
@@ -165,12 +179,12 @@ ToolCardReading readToolCard(ChatItemPresentation item, {String? arguments}) {
           invocation['workingDirectory'],
           'invocation.workingDirectory',
         ),
-        exitCode: output?['exitCode'] == null
-            ? null
-            : chatInteger(output!['exitCode'], 'output.exitCode'),
+        exitCode: stateExitCode ?? dataExitCode,
         timedOut: failure?['kind'] == 'timedOut',
         attachments: chatAttachments(output?['attachments']),
         outputArtifacts: artifacts == null ? const [] : [artifacts],
+        toolData: toolData,
+        outputArtifactIdentity: artifactBody?.feedReference,
         wait:
             (adapter is WaitToolItem || adapter is SleepToolItem) &&
                 item.data['wait'] != null

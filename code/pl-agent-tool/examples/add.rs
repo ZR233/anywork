@@ -19,6 +19,7 @@ pub struct AddArgs {
 }
 
 /// Plain owned output; the adapter never re-encodes it as JSON.
+#[derive(serde::Serialize, schemars::JsonSchema)]
 pub struct Sum {
     pub value: i64,
 }
@@ -61,7 +62,7 @@ impl TypedTool for Add {
 type AddEndpoint = ToolHandle<String, (), Sum, InvocationError<AddError>>;
 
 fn add_tool(offset: i64) -> Result<AddEndpoint, DefinitionError> {
-    let prepared = prepare_json::<Add>()?;
+    let prepared = prepare_json::<Add>()?.with_output_schema()?;
     Ok(ToolHandle::new(prepared.attach(Add { offset })))
 }
 

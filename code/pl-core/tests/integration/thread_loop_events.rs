@@ -69,8 +69,8 @@ impl pl_agent_tool::Tool for ProgressTool {
             .await;
         self.started.notify_one();
         self.release.cancelled().await;
-        Ok(ToolOutput::new(
-            OpaquePayload::text("tool result payload"),
+        Ok(ToolOutput::from_data(
+            serde_json::Value::String("tool result payload".into()),
             vec![support::text("tool result content")],
         ))
     }

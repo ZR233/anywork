@@ -26,7 +26,8 @@ pub enum InputOutcome {
 #[derive(Debug)]
 pub enum StdinResult {
     Terminal {
-        receipt_json: String,
+        target_receipt: String,
+        status: String,
     },
     Observed {
         snapshot: Box<CommandOutputSnapshot>,
@@ -37,21 +38,35 @@ pub enum StdinResult {
 }
 
 impl StdinResult {
-    pub fn encode(&self, receipt: Option<String>) -> Result<String, serde_json::Error> {
+    pub fn result(&self, receipt: Option<&str>) -> pl_agent_tool::ToolResult<String> {
         match self {
-            Self::Terminal { receipt_json } => Ok(receipt_json.clone()),
+            Self::Terminal {
+                target_receipt,
+                status,
+            } => {
+                let detail = "Target is terminal; historical stdin close state is unavailable. No input was sent and no process was started.";
+                pl_agent_tool::ToolResult::from_data(
+                    serde_json::json!({
+                        "taskId": receipt,
+                        "targetTaskId": target_receipt,
+                        "status": status,
+                        "inputReceipt": {"acceptedBytes": 0, "outcome": "notSent", "detail": detail},
+                    }),
+                    vec![detail.into()],
+                )
+            }
             Self::Observed {
                 snapshot,
                 target_receipt,
-                requested_body_bytes,
                 ..
-            } => crate::process::output::projection::<()>(
-                snapshot,
-                &[],
-                receipt,
-                *requested_body_bytes,
-                Some(target_receipt),
-            ),
+            } => {
+                let data = serde_json::json!({
+                    "taskId": receipt,
+                    "targetTaskId": target_receipt,
+                    "inputReceipt": snapshot.input_receipt,
+                });
+                pl_agent_tool::ToolResult::from_data(data.clone(), vec![data.to_string()])
+            }
         }
     }
 }
@@ -64,8 +79,6 @@ pub enum StdinError<E: std::error::Error + 'static> {
     Process(E),
     #[error("stdin invocation cancelled before input was sent")]
     Cancelled,
-    #[error(transparent)]
-    Encoding(#[from] serde_json::Error),
 }
 
 #[derive(Debug)]
@@ -105,13 +118,9 @@ impl<P: ProcessInput> Tool for WriteStdinTool<P> {
             .map_err(StdinError::Process)?;
         let target = match target {
             InputTarget::Terminal { status } => {
-                let receipt = serde_json::json!({
-                    "targetTaskId": input.task_id, "status": status,
-                    "acceptedBytes": 0, "deliveryPending": false,
-                    "detail": "Target is terminal; historical stdin close state is unavailable. No input was sent and no process was started."
-                });
                 return Ok(StdinResult::Terminal {
-                    receipt_json: serde_json::to_string(&receipt)?,
+                    target_receipt: input.task_id,
+                    status,
                 });
             }
             InputTarget::Live(target) => target,

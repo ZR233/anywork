@@ -35,6 +35,11 @@ async fn load_saved_current(
     store: &StudioStore,
     thread: &crate::Thread,
 ) -> Result<Option<ThreadCurrent>> {
+    let session = store.session_paths(&thread.workspace_id, &thread.id)?;
+    store
+        .thread_persistence()
+        .upgrade_current_for_recovery(&thread.id, session.root().to_path_buf())
+        .await?;
     let state = store.state_for(&thread.workspace_id, &thread.id)?;
     if let Some(current) = state.load_current().await? {
         return Ok(Some(current));

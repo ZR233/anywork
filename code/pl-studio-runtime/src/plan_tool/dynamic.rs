@@ -5,7 +5,7 @@ use crate::plan_tool::state::AgentSessionPlanOptions;
 use crate::thread_assembler::ThreadAssemblyError;
 use crate::tool_json::{JsonToolInput, json_output, put_extension};
 use crate::{AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, UserQuestion, UserQuestionOption};
-use pl_agent_tool::typed::TypedTool;
+use pl_agent_tool::typed::{TypedTool, input_schema_for, output_schema_for};
 use pl_agent_tool::{Tool, ToolDefinition, ToolHandle};
 use pl_core::{
     context::OpaquePayload,
@@ -22,6 +22,7 @@ use pl_tool_plan::{
     PlanHost, PlanNextResponse, PlanNextTool, PlanSnapshot, PlanTransitionArgs,
     PlanTransitionCommand, PlanTransitionOutcome, PlanTransitionTool,
 };
+use schemars::JsonSchema;
 use std::sync::{Arc, Mutex};
 
 pub const PLAN_EXTENSION: &str = "studio.plan";
@@ -265,17 +266,15 @@ struct ThreadPlanTool<T> {
 impl<T> ThreadPlanTool<T>
 where
     T: TypedTool<Context = StudioPlanCallContext, Error = ToolError>,
-    T::Output: serde::Serialize,
+    T::Output: JsonSchema,
 {
     fn build(
         tool: T,
         options: AgentSessionPlanOptions,
     ) -> Result<Self, pl_agent_tool::DefinitionError> {
-        let definition = ToolDefinition::json(
-            T::NAME,
-            T::DESCRIPTION,
-            pl_agent_tool::typed::input_schema_for::<T::Args>(),
-        )?;
+        let definition =
+            ToolDefinition::json(T::NAME, T::DESCRIPTION, input_schema_for::<T::Args>())?
+                .with_output_schema(output_schema_for::<T::Output>())?;
         Ok(Self {
             tool,
             definition,
@@ -336,7 +335,7 @@ where
             .tool
             .execute(args, StudioPlanCallContext(Arc::clone(&shared)))
             .await?;
-        let mut output = json_output("pl.studio.plan-result", &result)?;
+        let mut output = json_output(&result)?;
         let mut guard = shared
             .lock()
             .map_err(|_| ToolError::new(PlanPayloadError::Context))?;
@@ -416,10 +415,34 @@ where
 }
 
 #[cfg(test)]
-mod argument_tests {
+mod tests {
     use super::*;
     use pl_agent_tool::typed::{ArgumentError, JsonError};
-    use pl_core::thread::extensions::ExtensionRecord;
+    use pl_core::thread::extensions::{ExtensionMutation, ExtensionRecord};
+    use serde_json::json;
+
+    fn initial_context() -> CallContext {
+        CallContext {
+            thread_id: "argument-thread".into(),
+            turn_id: "argument-turn".into(),
+            call_id: "argument-call".into(),
+            cancellation: Default::default(),
+            extensions: Arc::new(std::collections::BTreeMap::from([(
+                PLAN_EXTENSION.into(),
+                ExtensionRecord {
+                    revision: 0,
+                    payload: encode_plan_state(&Default::default()).unwrap(),
+                },
+            )])),
+            catalog: Arc::from([]),
+            extension_sequence: 0,
+            grant: Default::default(),
+            context: Default::default(),
+            history_fence: 0,
+            model_projection: None,
+            tasks: None,
+        }
+    }
 
     #[tokio::test]
     async fn plan_adapter_retains_argument_paths_and_trailing_source() {
@@ -429,27 +452,7 @@ mod argument_tests {
             AgentSessionPlanOptions::default().with_confirmation_interaction(true),
         )
         .unwrap();
-        let extensions = Arc::new(std::collections::BTreeMap::from([(
-            PLAN_EXTENSION.into(),
-            ExtensionRecord {
-                revision: 0,
-                payload: encode_plan_state(&Default::default()).unwrap(),
-            },
-        )]));
-        let context = CallContext {
-            thread_id: "argument-thread".into(),
-            turn_id: "argument-turn".into(),
-            call_id: "argument-call".into(),
-            cancellation: Default::default(),
-            extensions: extensions.clone(),
-            catalog: Arc::from([]),
-            extension_sequence: 0,
-            grant: Default::default(),
-            context: Default::default(),
-            history_fence: 0,
-            model_projection: None,
-            tasks: None,
-        };
+        let context = initial_context();
         for (raw, expected_path) in [
             (
                 r##"{"targetState":"awaitingConfirmation","expectedRevision":"bad","content":"# Plan"}"##,
@@ -489,11 +492,92 @@ mod argument_tests {
                     .is::<JsonError>()
             );
             assert_eq!(
-                decode_plan_state(&extensions[PLAN_EXTENSION].payload).unwrap(),
+                decode_plan_state(&context.extensions[PLAN_EXTENSION].payload).unwrap(),
                 Default::default()
             );
         }
         tool.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn plan_outputs_report_the_document_and_a_stale_revision_without_control_effects() {
+        let host = Arc::new(StudioPlanHost);
+        let options = AgentSessionPlanOptions::default().with_confirmation_interaction(true);
+        let current =
+            ThreadPlanTool::build(PlanCurrentTool::new(Arc::clone(&host)), options).unwrap();
+        let transition = ThreadPlanTool::build(PlanTransitionTool::new(host), options).unwrap();
+        let mut context = initial_context();
+        let query = OpaquePayload::new("application/json", 1, "{}").unwrap();
+        let initial = current
+            .execute(query.clone(), context.clone())
+            .await
+            .unwrap();
+        let initial_data = initial.data().unwrap();
+        assert_eq!(initial_data["state"], "drafting");
+        assert_eq!(initial_data["revision"], 0);
+        assert!(initial_data.get("document").is_none());
+
+        let submit = OpaquePayload::new(
+            "application/json",
+            1,
+            json!({"targetState": "awaitingConfirmation", "expectedRevision": 0, "content": "# Plan"}).to_string(),
+        )
+        .unwrap();
+        let accepted = transition.execute(submit, context.clone()).await.unwrap();
+        let data = accepted.data().unwrap();
+        assert_eq!(data["accepted"], true);
+        assert_eq!(data["record"]["toState"], "awaitingConfirmation");
+        assert_eq!(data["snapshot"]["document"]["content"], "# Plan");
+        assert!(data.get("error").is_none());
+        assert!(accepted.interaction().is_some());
+        let [
+            ExtensionMutation::Put {
+                id,
+                expected_revision,
+                payload,
+            },
+        ] = accepted.extension_mutations()
+        else {
+            panic!("the Plan submission must update its extension");
+        };
+        assert_eq!(id, PLAN_EXTENSION);
+        assert_eq!(*expected_revision, Some(0));
+        Arc::make_mut(&mut context.extensions).insert(
+            id.clone(),
+            ExtensionRecord {
+                revision: 1,
+                payload: payload.clone(),
+            },
+        );
+        context.call_id = "stale-plan-call".into();
+
+        let stale = OpaquePayload::new(
+            "application/json",
+            1,
+            r#"{"targetState":"revisionRequested","feedback":"revise","expectedRevision":0}"#,
+        )
+        .unwrap();
+        let rejected = transition.execute(stale, context.clone()).await.unwrap();
+        let data = rejected.data().unwrap();
+        assert_eq!(data["accepted"], false);
+        assert_eq!(data["error"]["code"], "staleRevision");
+        assert_eq!(data["error"]["currentRevision"], 1);
+        assert!(data.get("record").is_none());
+        assert!(rejected.interaction().is_none());
+        assert!(rejected.extension_mutations().is_empty());
+
+        let saved = current.execute(query, context).await.unwrap();
+        assert_eq!(saved.data(), data.get("snapshot"));
+        let schema = transition.definition().output_schema().unwrap();
+        assert_eq!(schema["properties"]["accepted"]["type"], "boolean");
+        assert_eq!(
+            schema["$defs"]["PlanDocument"]["properties"]["content"]["type"],
+            "string"
+        );
+        assert_eq!(
+            schema["$defs"]["PlanTransitionError"]["properties"]["currentRevision"]["type"],
+            "integer"
+        );
     }
 }
 

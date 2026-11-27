@@ -3,6 +3,7 @@ mod compiler;
 mod context;
 mod dynamic;
 pub(crate) mod machine;
+mod output;
 mod preview;
 mod runtime;
 mod state;

@@ -84,6 +84,7 @@ async fn live_schema_tool_output_continues() -> Result<()> {
         "Synthetic schema probe result: blue-moon-7391",
     );
     output.tool_result = Some(ToolResultRecord {
+        data: pl_agent_tool::ToolData::Value(serde_json::json!({"result":"blue-moon-7391"})),
         item_id: call.id.clone(),
         call_id: call.call_id.clone(),
         name: call.name.clone(),

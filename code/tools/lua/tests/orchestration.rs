@@ -62,7 +62,11 @@ impl ToolHost for Host {
             },
         ]
     }
-    async fn call(&self, name: String, value: Value) -> Result<Value, pl_tool_lua::CallFailure> {
+    async fn call(
+        &self,
+        name: String,
+        value: Value,
+    ) -> Result<Option<Value>, pl_tool_lua::CallFailure> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
         self.peak.fetch_max(active, Ordering::SeqCst);
@@ -80,7 +84,12 @@ impl ToolHost for Host {
                 output: Some(json!({"hidden":"PRIVATE_FAILURE_RESULT"})),
             });
         }
-        Ok(json!({"name":name,"value":value,"unselected":"PRIVATE_INTERMEDIATE"}))
+        if value == json!("absent") {
+            return Ok(None);
+        }
+        Ok(Some(
+            json!({"name":name,"value":value,"unselected":"PRIVATE_INTERMEDIATE"}),
+        ))
     }
 }
 
@@ -129,6 +138,11 @@ async fn selects_results_preserves_json_and_handles_tool_failure() {
         local r = tools.read({empty=json.array({}), null=json.null, nested={true, "雪"}})
         local ok, err = pcall(function() tools.read("fail") end)
         assert(not ok and tostring(err):find("deliberate tool failure",1,true)); assert(err.output.hidden=="PRIVATE_FAILURE_RESULT" and not tostring(err):find("PRIVATE_FAILURE_RESULT",1,true))
+        local absent = tools.read("absent")
+        assert(absent == nil and r.value.null == json.null)
+        local values = parallel({function() return absent end, function() return r.value.empty end})
+        assert(json.encode(values) == "[null,[]]")
+        r.value.nested[1] = false
         print({selected=r.value.empty}); return json.decode(json.encode(r.value))
     "#;
     let result = execute(input(code), Host::default(), CancellationToken::new())
@@ -138,7 +152,7 @@ async fn selects_results_preserves_json_and_handles_tool_failure() {
     assert!(result.output.starts_with("{\"selected\":[]}\n"));
     assert_eq!(
         serde_json::from_str::<Value>(result.output.lines().last().unwrap()).unwrap(),
-        json!({"empty":[],"null":null,"nested":[true,"雪"]})
+        json!({"empty":[],"null":null,"nested":[false,"雪"]})
     );
     assert!(!result.output.contains("PRIVATE_INTERMEDIATE"));
 }
@@ -319,15 +333,16 @@ async fn json_arguments_reach_tools_without_lua_string_interpolation() {
 async fn receipt_syntax_error_locates_the_source_and_correction_runs_original_calls_once() {
     // Reduced from the end-of-program result tables in issue #487's real trace.
     let cases = [
-        "local r = tools.read(args).value; print({exitCode=r.exitCode, stdout=r.stdout.content, stderr:r.stderr.content})",
-        "local r = tools.read(args).value\nreturn {payload={exitCode=r.exitCode, stdout=r.stdout.content, stderr:r.stderr.content}}",
-        "tools.write(args)\nlocal r = tools.read(args).value\nprint({exitCode=r.exitCode, stdout=r.stdout.content, stderr:r.stderr.content})",
+        "local r = tools.read(args).value; print({exitCode=r.exitCode, stdout=r.stdout, stderr:r.stderr})",
+        "local r = tools.read(args).value\nreturn {payload={exitCode=r.exitCode, stdout=r.stdout, stderr:r.stderr}}",
+        "tools.write(args)\nlocal r = tools.read(args).value\nprint({exitCode=r.exitCode, stdout=r.stdout, stderr:r.stderr})",
     ];
     for code in cases {
         let host = Host::default();
         let request: ExecInput = serde_json::from_value(json!({
-            "code": code, "args": {"exitCode":0,"stdout":{"content":"unchanged:雪"},"stderr":{"content":""}},
-        })).unwrap();
+            "code": code, "args": {"exitCode":0,"stdout":"unchanged:雪","stderr":""},
+        }))
+        .unwrap();
         let result = execute(request.clone(), host.clone(), CancellationToken::new())
             .await
             .unwrap();
@@ -340,18 +355,18 @@ async fn receipt_syntax_error_locates_the_source_and_correction_runs_original_ca
         );
         assert!(error.contains("before any tool started"), "{error}");
         assert!(
-            error.contains("stderr:r.stderr.content"),
+            error.contains("stderr:r.stderr"),
             "the reported source is missing: {error}"
         );
         assert!(
-            error.contains("key=value") && error.contains("stderr=r.stderr.content"),
+            error.contains("key=value") && error.contains("stderr=r.stderr"),
             "{error}"
         );
         assert!(result.output.is_empty());
         assert_eq!(host.calls.load(Ordering::SeqCst), 0);
 
         let fixed = ExecInput {
-            code: code.replace("stderr:r.stderr.content", "stderr=r.stderr.content"),
+            code: code.replace("stderr:r.stderr", "stderr=r.stderr"),
             ..request
         };
         let result = execute(fixed, host.clone(), CancellationToken::new())
@@ -381,7 +396,8 @@ async fn receipt_syntax_error_locates_the_source_and_correction_runs_original_ca
 #[tokio::test]
 async fn source_context_is_bounded_and_does_not_relabel_methods_strings_or_runtime_failure() {
     let host = Host::default();
-    let args = json!({"command":"printf 'https://example.invalid/a:b'", "patch":"+stderr:r.stderr.content"});
+    let args =
+        json!({"command":"printf 'https://example.invalid/a:b'", "patch":"+stderr:r.stderr"});
     let request: ExecInput = serde_json::from_value(json!({
         "code": "local obj={value=args, method=function(self) return self.value end}; return tools.write(obj:method()).value",
         "args":args,

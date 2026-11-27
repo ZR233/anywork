@@ -437,7 +437,9 @@ class _ChatItemViewState extends State<ChatItemView> {
               'tool.result' => adapter.readsOutput(
                 tool.statusString,
                 output: tool.output,
+                toolData: tool.toolData,
               ),
+              'tool.output-artifacts' => adapter.readsToolData,
               _ => false,
             },
       );
@@ -451,22 +453,36 @@ class _ChatItemViewState extends State<ChatItemView> {
             : (_) => _media(),
         declaredContentIdentity: feedContents.isEmpty
             ? null
-            : (outputReference, true),
+            : (
+                outputReference,
+                item.body('tool.output-artifacts')?.feedReference,
+                true,
+              ),
         declaredContentBuilder: feedContents.isEmpty
             ? null
-            : (onOutputRead, acceptance) => [
+            : (onOutputRead, onToolDataRead, acceptance) => [
                 for (final body in feedContents)
                   TimelineBodyReadIntent(
                     scrollable: true,
-                    onRead: body.key == 'tool.result' ? onOutputRead : null,
-                    bodyBuilder: (text) => timelineToolWindowBody(
-                      context,
-                      tool,
-                      text,
-                      input: body.key == 'tool.arguments',
-                      markdownBuilder: widget.bodyBuilder,
-                      acceptance: acceptance,
-                    ),
+                    onRead: switch (body.key) {
+                      'tool.result' => onOutputRead,
+                      'tool.output-artifacts' => (window) => onToolDataRead(
+                        body.key,
+                        body.byteLength,
+                        window,
+                      ),
+                      _ => null,
+                    },
+                    bodyBuilder: body.key == 'tool.output-artifacts'
+                        ? (_) => const SizedBox.shrink()
+                        : (text) => timelineToolWindowBody(
+                            context,
+                            tool,
+                            text,
+                            input: body.key == 'tool.arguments',
+                            markdownBuilder: widget.bodyBuilder,
+                            acceptance: acceptance,
+                          ),
                     child: _body(body, disclosed: true),
                   ),
               ],

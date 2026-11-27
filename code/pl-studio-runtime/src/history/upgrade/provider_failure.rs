@@ -1,15 +1,13 @@
 //! Frozen product Turn failures from before schema 26 maintenance revision 2.
 
-use sea_orm::ConnectionTrait;
-use serde_json::Value;
-use sha2::{Digest, Sha256};
-
 use crate::history::{
-    BODY_CHUNK_BYTES, HistoryBodyManifestEntry, HistoryError, HistoryEventBodyRef, HistoryTurnHead,
+    HistoryBodyManifestEntry, HistoryError, HistoryEventBodyRef, HistoryTurnHead,
     INLINE_BODY_MAX_BYTES, INLINE_EVENT_MAX_BYTES, Result,
     db::{self, statement},
 };
 use crate::{Turn, TurnState};
+use sea_orm::ConnectionTrait;
+use serde_json::Value;
 
 use super::{LEGACY_EVENT_PREFIX, v25_to_v26::insert_migrated_inline_blob};
 
@@ -139,67 +137,12 @@ async fn read_detail(
                     "Turn detail reference differs from its body".into(),
                 ));
             }
-            validate_chunk_layout(db, &body).await?;
-            let mut bytes = Vec::new();
-            while bytes.len() < length {
-                let chunk =
-                    db::window(db, &body, bytes.len() as u64, BODY_CHUNK_BYTES as u32).await?;
-                bytes.try_reserve(chunk.len()).map_err(|error| {
-                    HistoryError::Integrity(format!("cannot allocate Turn detail: {error}"))
-                })?;
-                bytes.extend(chunk);
-            }
-            if Sha256::digest(&bytes)[..] != body.digest {
-                return Err(HistoryError::Integrity(
-                    "Turn detail body digest differs from its bytes".into(),
-                ));
-            }
-            Ok(bytes)
+            db::read_verified_body(db, &body).await
         }
         _ => Err(HistoryError::Integrity(
             "invalid Turn detail manifest entry".into(),
         )),
     }
-}
-
-async fn validate_chunk_layout(db: &impl ConnectionTrait, body: &db::Body) -> Result<()> {
-    let chunk_size = BODY_CHUNK_BYTES as u64;
-    let chunk_count = body.length.div_ceil(chunk_size);
-    let final_chunk = chunk_count.saturating_sub(1);
-    let final_size = body.length - final_chunk * chunk_size;
-    // Range reads can end inside a chunk. Check the complete persisted layout first so
-    // a matching digest over just the declared range cannot hide trailing bytes.
-    let layout = db
-        .query_one_raw(statement(
-            "SELECT count(*) AS chunks, coalesce(sum(length(data)),0) AS bytes,
-                count(CASE WHEN chunk_no<0 OR chunk_no>=? OR typeof(data)<>'blob'
-                      OR length(data)<>CASE WHEN chunk_no=? THEN ? ELSE ? END
-                      THEN 1 END) AS malformed
-         FROM history_body_chunks WHERE body_id=?",
-            vec![
-                db::number(chunk_count)?.into(),
-                db::number(final_chunk)?.into(),
-                db::number(final_size)?.into(),
-                db::number(chunk_size)?.into(),
-                body.id.clone().into(),
-            ],
-        ))
-        .await?
-        .ok_or_else(|| {
-            HistoryError::Integrity("Turn detail chunk layout summary is missing".into())
-        })?;
-    // The body id and chunk number form the primary key, so count plus range
-    // validates continuity without reading the BLOBs into a second buffer.
-    if layout.try_get::<i64>("", "chunks")? != db::number(chunk_count)?
-        || layout.try_get::<i64>("", "bytes")? != db::number(body.length)?
-        || layout.try_get::<i64>("", "malformed")? != 0
-    {
-        return Err(HistoryError::Integrity(format!(
-            "Turn detail chunk layout differs from body {}",
-            body.id
-        )));
-    }
-    Ok(())
 }
 
 async fn replace_detail(

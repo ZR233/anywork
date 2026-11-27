@@ -91,6 +91,8 @@ SIGINT/SIGTERM 锁存第一个信号；重复信号不启动第二个关闭所�
 
 指定 `--output-dir` 后，命令行宿主将运行事实写入独立的 V3 归档目录。`run.json`、`events.jsonl` 与 `result.json` 均声明 schema 3；运行标识为标准 UUID，内容寻址摘要使用 SHA-256。
 
+工具原件导出沿用 [09](./09-tool-runtime.md#91-工具身份所有权与历史落盘栅栏) 的作者数据、模型内容与框架真实终态，历史中的实际交付不由当前渲染器重建。运行归档不是完整的线上请求抓包。需要核对生产请求正文时，使用 [06](./06-model.md) 的 `ANYWORK_WIRE_CAPTURE_DIR` 捕获入口并关联对应推理及供应商响应；捕获文件不包含认证头，其格式化文件长度也不是发送正文长度。提交前捕获的正文不能单独证明请求已经到达供应商。
+
 - `run.json` 在运行时初始化及获取运行锁前原子写入，之后保持不变。它记录构建身份、解析后的调用参数、技能搜索策略，以及初始配置、角色和模式文件的逻辑名称与 SHA-256。可选的 `redactedSummary` 保持 `null`：配置允许命令参数、网址及扩展字段，按键名删除敏感项不足以保证凭据保密，因此不复制配置正文、凭据存储或环境变量值。
 - `events.jsonl` 由单个写入任务按连续 `eventSeq` 追加。它覆盖运行开始、成员登记、冻结技能来源、调用账单、History 原件、执行生命周期、线程封口与运行封口。`source` 保留可用的 History event/seq、effect、Turn、attempt、tool call 与 Current owner/revision；文件次序不代替跨线程因果关系，未知值继续为空。
 - `Completion` 事实由 `HistoryEventHeader`、`HistoryEntityHead`、canonical payload blob 和 Contents manifest 组成。HistoryReader 按固定 cut 以最多 128 个 canonical events 一页流式枚举；payload、metadata 与正文按最多 64 KiB 范围复制。Contents manifest 是独立的 NDJSON 正文目录内容，不内联到小头，也不把整组或整次运行的正文累计进内存。

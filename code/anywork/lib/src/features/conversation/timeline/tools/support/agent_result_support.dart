@@ -1,5 +1,6 @@
 import '../../../../../l10n/app_localizations.dart';
 import '../../../../../shared/typed_json.dart';
+import '../../state/tool_data_artifact.dart';
 import '../../state/tool_presentation.dart';
 import 'task_state_values_support.dart';
 import 'tool_detail_values.dart';
@@ -54,7 +55,10 @@ String? toolAgentRowTarget(
   List<String> idKeys = defaultAgentIdKeys,
 }) {
   final arguments = decodeJsonObject(item.arguments);
-  final output = decodeJsonObject(item.output);
+  final output = switch (item.toolData) {
+    ToolDataArtifactPresent(:final value) => jsonObject(value),
+    _ => <String, dynamic>{},
+  };
   final sources = [
     arguments,
     output,

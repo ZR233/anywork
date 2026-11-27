@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../../../l10n/app_localizations.dart';
@@ -37,5 +39,13 @@ class GenericToolItem extends StructuredTimelineToolAdapter {
 
   @override
   List<ToolDetailValue> output(AppLocalizations l10n, Object? result) =>
-      toolTextResult(l10n, result);
+      result is String
+      ? toolTextResult(l10n, result)
+      : [
+          ToolDetailText(
+            l10n.timelineToolDetailResult,
+            jsonEncode(result),
+            code: true,
+          ),
+        ];
 }

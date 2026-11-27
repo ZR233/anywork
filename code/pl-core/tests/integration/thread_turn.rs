@@ -42,7 +42,10 @@ impl pl_agent_tool::Tool for RetiringTool {
     }
 
     async fn execute(&self, input: OpaquePayload, _: CallContext) -> Result<ToolOutput, ToolError> {
-        Ok(ToolOutput::new(input, vec![]))
+        Ok(ToolOutput::from_data(
+            serde_json::Value::String(input.content().to_owned()),
+            vec![],
+        ))
     }
     async fn close(&self) -> Result<(), ToolError> {
         let _ = self.0.send("closed");
@@ -209,7 +212,10 @@ impl pl_agent_tool::Tool for FailingClose {
     }
 
     async fn execute(&self, input: OpaquePayload, _: CallContext) -> Result<ToolOutput, ToolError> {
-        Ok(ToolOutput::new(input, vec![]))
+        Ok(ToolOutput::from_data(
+            serde_json::Value::String(input.content().to_owned()),
+            vec![],
+        ))
     }
     fn close(&self) -> impl Future<Output = Result<(), ToolError>> + Send {
         let failed = self.first.swap(false, Ordering::SeqCst);
@@ -303,7 +309,10 @@ impl pl_agent_tool::Tool for InFlightTool {
     async fn execute(&self, input: OpaquePayload, _: CallContext) -> Result<ToolOutput, ToolError> {
         self.events.send("executing").unwrap();
         self.release.notified().await;
-        Ok(ToolOutput::new(input, vec![]))
+        Ok(ToolOutput::from_data(
+            serde_json::Value::String(input.content().to_owned()),
+            vec![],
+        ))
     }
     async fn close(&self) -> Result<(), ToolError> {
         let _ = self.events.send("closed");
@@ -452,7 +461,10 @@ impl pl_agent_tool::Tool for SideEffectTool {
         _context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
         self.0.store(true, Ordering::SeqCst);
-        Ok(ToolOutput::new(input, vec![]))
+        Ok(ToolOutput::from_data(
+            serde_json::Value::String(input.content().to_owned()),
+            vec![],
+        ))
     }
 }
 
@@ -583,7 +595,10 @@ impl pl_agent_tool::Tool for FenceTool {
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
         self.0.lock().unwrap().push(context.history_fence);
-        Ok(ToolOutput::new(input, vec![]))
+        Ok(ToolOutput::from_data(
+            serde_json::Value::String(input.content().to_owned()),
+            vec![],
+        ))
     }
 }
 
@@ -668,8 +683,20 @@ async fn a_turn_commits_user_model_and_tool_facts_in_call_order() {
         .flat_map(|effect| effect.deliveries.to_vec())
         .collect();
     assert_eq!(deliveries.len(), 2);
-    assert_eq!(deliveries[0].output.payload().content(), "  raw first\n");
-    assert_eq!(deliveries[1].output.payload().content(), "  raw second\n");
+    assert_eq!(
+        deliveries[0]
+            .output
+            .data()
+            .and_then(serde_json::Value::as_str),
+        Some("  raw first\n")
+    );
+    assert_eq!(
+        deliveries[1]
+            .output
+            .data()
+            .and_then(serde_json::Value::as_str),
+        Some("  raw second\n")
+    );
     assert!(thread.snapshot().context.records.iter().any(|record| {
         record.source == ContextSource::Assistant
             && record.content.contains(&ContextContent::Text {

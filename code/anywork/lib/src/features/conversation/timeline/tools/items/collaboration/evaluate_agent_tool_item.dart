@@ -2,6 +2,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../../../../../l10n/app_localizations.dart';
 import '../../../../../../shared/typed_json.dart';
+import '../../../state/tool_data_artifact.dart';
 import '../../../state/tool_presentation.dart';
 import '../../support/agent_result_support.dart';
 import '../../support/structured_tool_adapter.dart';
@@ -49,7 +50,10 @@ class EvaluateAgentToolItem extends StructuredTimelineToolAdapter {
   String? rowTarget(AppLocalizations l10n, TimelineToolPresentation item) {
     final targetLabel = toolAgentRowTarget(item);
     final arguments = decodeJsonObject(item.arguments);
-    final output = decodeJsonObject(item.output);
+    final output = switch (item.toolData) {
+      ToolDataArtifactPresent(:final value) => jsonObject(value),
+      _ => <String, dynamic>{},
+    };
     final evaluation = jsonObject(output['evaluation']);
     final rawComment =
         jsonStringValue(arguments['comment']) ??

@@ -212,6 +212,7 @@ impl Owner {
         let mut frozen_input = messages;
         if !input.content.is_empty() {
             frozen_input.push(ContextRecord {
+                tool_data: Default::default(),
                 tool_calls: Vec::new(),
                 id: format!("{}:input", input.attempt_id),
                 turn_id: Some(input.turn_id.clone()),
@@ -550,6 +551,7 @@ impl Owner {
                     content: vec![ContextContent::Text {
                         text: Arc::from(text),
                     }],
+                    tool_data: Default::default(),
                     tool_calls: Vec::new(),
                 });
                 self.state.context = ContextSnapshot {
@@ -623,6 +625,7 @@ impl Owner {
                     }
                     let mut records = self.state.context.records.to_vec();
                     records.push(ContextRecord {
+                        tool_data: Default::default(),
                         tool_calls: output.tool_calls.clone(),
                         id: format!("{}:output", input.attempt_id),
                         // 提交记录与 effect/子引用共享同一个稳定 turn id：这里克隆而不是移动，

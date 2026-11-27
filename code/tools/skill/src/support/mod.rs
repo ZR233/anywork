@@ -42,7 +42,7 @@ pub struct Document<S, R> {
     pub resource_base: R,
     pub content: String,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ViewedSkill<S, R> {
     pub success: bool,

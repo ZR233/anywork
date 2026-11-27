@@ -13,13 +13,13 @@ pub struct Args {
     /// Maximum query results. Defaults to 10 and must be between 1 and 50.
     pub limit: Option<usize>,
 }
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillSummary {
     pub name: String,
     pub description: String,
 }
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Output {
     pub success: bool,

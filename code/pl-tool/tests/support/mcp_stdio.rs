@@ -99,7 +99,7 @@ for raw in sys.stdin:
             schema = {
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "description": os.environ["MCP_SCHEMA_TAG"],
-                "$defs": {"Mode": {"type": "string", "enum": ["success", "error", "unarchived"]}},
+                "$defs": {"Mode": {"type": "string", "enum": ["success", "error", "unarchived", "structured_error", "missing_structure"]}},
                 "allOf": [{"type": "object", "properties": {"mode": {"$ref": "#/$defs/Mode"}}, "required": ["mode"]}],
                 "unevaluatedProperties": False
             }
@@ -112,8 +112,12 @@ for raw in sys.stdin:
                     "description": "Returns argv, cwd, and env",
                     "inputSchema": schema,
                     "annotations": {"readOnlyHint": True},
-                    **({"outputSchema": {"type": "object", "additionalProperties": True}}
-                       if os.environ.get("MCP_BINDING_RESULTS") == "1" else {})
+                    **({"outputSchema": {
+                        "type": "object",
+                        "properties": {"count": {"type": "integer"}, "empty": {"type": "array"}, "optional": {"type": "null"}},
+                        "required": ["count", "empty", "optional"],
+                        "additionalProperties": False
+                    }} if os.environ.get("MCP_BINDING_RESULTS") == "1" and os.environ.get("MCP_SCHEMA_TAG") != "untyped" else {})
                 }]
             }
         }
@@ -161,7 +165,11 @@ for raw in sys.stdin:
                 }}]
             else:
                 content = [{"type": "text", "text": os.environ["MCP_SCHEMA_TAG"] + ":" + mode}]
-            resp["result"] = {"content": content, "isError": mode == "error"}
+            resp["result"] = {"content": content, "isError": mode in ("error", "structured_error")}
+            if mode == "success" and os.environ.get("MCP_BINDING_STRUCTURED") == "1":
+                resp["result"]["structuredContent"] = {"count": 3, "empty": [], "optional": None}
+            if mode == "structured_error":
+                resp["result"]["structuredContent"] = {"reason": "invalid remote input"}
         sys.stdout.write(json.dumps(resp) + "\n")
         sys.stdout.flush()
         ready_marker = os.environ.get("MCP_READY_MARKER")

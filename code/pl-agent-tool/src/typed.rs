@@ -68,6 +68,16 @@ pub fn input_schema_for<A: JsonSchema>() -> JsonValue {
         .to_value()
 }
 
+/// Generates the draft 2020-12 serialization schema for the author's program value `R`.
+/// Dynamic tool families can use this when freezing their output declaration.
+pub fn output_schema_for<R: JsonSchema>() -> JsonValue {
+    schemars::generate::SchemaSettings::draft2020_12()
+        .for_serialize()
+        .into_generator()
+        .into_root_schema_for::<R>()
+        .to_value()
+}
+
 /// A validated declaration for `T`, prepared before any instance exists.
 ///
 /// The schema is generated exactly once here; there is no per-monotonization
@@ -149,12 +159,9 @@ impl<T: TypedTool> PreparedJson<T> {
     where
         T::Output: JsonSchema,
     {
-        let schema = schemars::generate::SchemaSettings::draft2020_12()
-            .for_serialize()
-            .into_generator()
-            .into_root_schema_for::<T::Output>()
-            .to_value();
-        let definition = self.definition.with_output_schema(schema)?;
+        let definition = self
+            .definition
+            .with_output_schema(output_schema_for::<T::Output>())?;
         Ok(Self {
             definition,
             _type: PhantomData,

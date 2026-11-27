@@ -103,6 +103,7 @@ pub fn validate_tool_history(messages: &[Message]) -> Result<()> {
                     expected_outputs.push_back(ExpectedToolOutput {
                         item_id: tool_call.item_id.clone(),
                         call_id: tool_call.call_id.clone(),
+                        name: tool_call.name.clone(),
                         kind: tool_call.kind,
                     });
                 }
@@ -137,6 +138,12 @@ pub fn validate_tool_history(messages: &[Message]) -> Result<()> {
                         expected.kind.as_str()
                     )));
                 }
+                if tool_result.name != expected.name {
+                    return Err(protocol_error(format!(
+                        "tool result name does not match the assistant tool call: {} != {}",
+                        tool_result.name, expected.name
+                    )));
+                }
             }
             MessageRole::System | MessageRole::User => {}
         }
@@ -158,20 +165,24 @@ pub fn tool_callers_by_result_position(
     let mut calls = VecDeque::new();
     let mut results = BTreeMap::new();
     for (position, item) in items.iter().enumerate() {
+        if item.is_compaction() {
+            calls.clear();
+        }
         let Some(message) = item.as_message() else {
             continue;
         };
         match message.role {
-            MessageRole::Assistant => calls.extend(
-                message
-                    .tool_calls
-                    .iter()
-                    .flatten()
-                    .map(|call| call.caller.clone()),
-            ),
+            MessageRole::Assistant => calls.extend(message.tool_calls.iter().flatten()),
             MessageRole::Tool => {
-                if let Some(Some(caller)) = calls.pop_front() {
-                    results.insert(position, caller);
+                if let (Some(call), Some(result)) =
+                    (calls.pop_front(), message.tool_result.as_ref())
+                    && call.item_id == result.item_id
+                    && call.call_id == result.call_id
+                    && call.kind == result.kind
+                    && call.name == result.name
+                    && let Some(caller) = &call.caller
+                {
+                    results.insert(position, caller.clone());
                 }
             }
             MessageRole::System | MessageRole::User => {}
@@ -194,6 +205,7 @@ pub fn record_custom_input(arguments: &Value) -> String {
 struct ExpectedToolOutput {
     item_id: String,
     call_id: String,
+    name: String,
     kind: ToolCallKind,
 }
 

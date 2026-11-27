@@ -133,13 +133,18 @@ abstract final class TimelinePreviewFixtures {
   }, bodies: _commandBodies);
   static final _commandBodies = [
     body('tool.arguments', '{"command":"cargo flutter test test/ui"}'),
+    body('tool.result', '00:04 +12: All tests passed!'),
     body(
-      'tool.result',
-      jsonEncode({
-        'stdout': {'content': '00:04 +12: All tests passed!'},
-        'stderr': {'content': ''},
-        'exitCode': 0,
-      }),
+      'tool.output-artifacts',
+      jsonEncode([
+        {
+          'toolData': {
+            'stdout': '00:04 +12: All tests passed!',
+            'stderr': '',
+            'exitCode': 0,
+          },
+        },
+      ]),
     ),
   ];
 

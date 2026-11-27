@@ -1724,6 +1724,7 @@ async fn a_provider_failure_withdraws_the_live_pair_before_the_attempt_returns()
         context: ContextSnapshot {
             revision: 1,
             records: vec![ContextRecord {
+                tool_data: Default::default(),
                 id: "failed-input".into(),
                 turn_id: Some("failed-turn".into()),
                 source: ContextSource::User,
@@ -2627,16 +2628,11 @@ impl Tool for RecordingLookup {
 
     async fn execute(
         &self,
-        input: OpaquePayload,
+        _input: OpaquePayload,
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
         self.calls.lock().expect("tool log").push(context.call_id);
-        Ok(ToolOutput::new(
-            input.clone(),
-            vec![ContextContent::Text {
-                text: Arc::from("lookup result"),
-            }],
-        ))
+        Ok(ToolOutput::text("lookup result".to_owned()))
     }
 }
 

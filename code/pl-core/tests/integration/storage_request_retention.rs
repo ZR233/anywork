@@ -73,8 +73,8 @@ impl pl_agent_tool::Tool for Tick {
     }
 
     async fn execute(&self, input: OpaquePayload, _: CallContext) -> Result<ToolOutput, ToolError> {
-        Ok(ToolOutput::new(
-            input,
+        Ok(ToolOutput::from_data(
+            serde_json::Value::String(input.content().to_owned()),
             vec![ContextContent::Text {
                 text: Arc::from("tick result"),
             }],
@@ -405,7 +405,10 @@ async fn execution_receipts_are_reliable_but_only_latest_is_resident() {
                 .await
                 .map_err(ToolError::new)?;
             *self.0.lock().unwrap() = Some(task);
-            Ok(ToolOutput::new(input, vec![]))
+            Ok(ToolOutput::from_data(
+                serde_json::Value::String(input.content().to_owned()),
+                vec![],
+            ))
         }
     }
     let last = Arc::new(std::sync::Mutex::new(None));

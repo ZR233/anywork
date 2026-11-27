@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:anywork_client/models.dart';
+import 'package:anywork/src/features/conversation/timeline/state/tool_data_artifact.dart';
 import 'package:anywork/src/features/conversation/timeline/state/tool_presentation.dart';
 
 import 'timeline_preview_fixtures.dart';
@@ -12,7 +13,8 @@ final class ToolDetailPreviewFixture {
     required this.name,
     required this.contract,
     required this.arguments,
-    required this.output,
+    this.output = '',
+    this.toolData = const ToolDataArtifactAbsent(),
     this.status = 'succeeded',
     this.error,
     this.exitCode,
@@ -25,6 +27,7 @@ final class ToolDetailPreviewFixture {
   final String contract;
   final Map<String, Object?> arguments;
   final String output;
+  final ToolDataArtifact toolData;
   final String status;
   final String? error;
   final int? exitCode;
@@ -41,6 +44,7 @@ final class ToolDetailPreviewFixture {
         statusString: status,
         arguments: jsonEncode(arguments),
         output: output,
+        toolData: toolData,
         error: error,
         taskId: 'task:internal-preview',
         workingDirectory: '/workspace/sample-project',
@@ -157,20 +161,33 @@ final toolDetailPreviewFixtures = List<ToolDetailPreviewFixture>.unmodifiable([
     name: 'exec',
     contract: 'builtin.exec@2',
     arguments: {'command': 'cargo test -p pl-core'},
-    output: '{"stdout":{"content":"Finished unit tests: 18 passed"},"stderr":{"content":""},"exitCode":0}',
+    toolData: const ToolDataArtifactPresent({
+      'taskId': 'task:internal-preview',
+      'stdout': 'Finished unit tests: 18 passed',
+      'stderr': '',
+      'exitCode': 0,
+    }),
     exitCode: 0,
   ),
   ToolDetailPreviewFixture(
     name: 'write_stdin',
     contract: 'builtin.write_stdin@1',
     arguments: {'taskId': 'task:internal-preview', 'chars': 'continue\n'},
-    output: '{"stdout":{"content":"继续处理了 3 个任务"},"inputReceipt":{"acceptedBytes":9,"closeState":"open","outcome":"accepted"}}',
+    toolData: const ToolDataArtifactPresent({
+      'taskId': 'task:stdin-preview',
+      'targetTaskId': 'task:internal-preview',
+      'inputReceipt': {
+        'acceptedBytes': 9,
+        'closeState': 'open',
+        'outcome': 'complete',
+      },
+    }),
   ),
   ToolDetailPreviewFixture(
     name: 'read_session_note',
     contract: 'builtin.read_session_note@1',
     arguments: {},
-    output: jsonEncode({
+    toolData: ToolDataArtifactPresent({
       'revision': 1,
       'contentHash': 'sha256:790ef20055fe99ad6a2ba68f9187e49572ee7a6116ad7eb623a065aceef47b90',
       'totalBytes': 54,
@@ -185,7 +202,7 @@ final toolDetailPreviewFixtures = List<ToolDetailPreviewFixture>.unmodifiable([
     name: 'search_session_note',
     contract: 'builtin.search_session_note@1',
     arguments: {'query': '时间线', 'contextLines': 1},
-    output: jsonEncode({
+    toolData: ToolDataArtifactPresent({
       'query': '时间线',
       'revision': 2,
       'contentHash': 'sha256:0412cd81f64465362d9d170aa7bf37f85a618e8366d0790ea99e93b1b8233199',
@@ -225,7 +242,7 @@ final toolDetailPreviewFixtures = List<ToolDetailPreviewFixture>.unmodifiable([
     name: 'stat_path',
     contract: 'builtin.stat_path@1',
     arguments: {'path': '/workspace/sample-project/lib/main.dart'},
-    output: jsonEncode({
+    toolData: ToolDataArtifactPresent({
       'path': '/workspace/sample-project/lib/main.dart',
       'exists': true,
       'type': 'file',
@@ -295,7 +312,7 @@ final toolDetailPreviewFixtures = List<ToolDetailPreviewFixture>.unmodifiable([
       'taskSummary': '检查离线搜索结果展示',
       'message': '核对离线搜索结果的标题、摘要与错误状态均可见。',
     },
-    output: jsonEncode({
+    toolData: ToolDataArtifactPresent({
       'agentId': 'agent-preview',
       'profileId': 'fixture',
       'delegation': {'mode': 'profile', 'preference': 'balanced'},
@@ -307,7 +324,7 @@ final toolDetailPreviewFixtures = List<ToolDetailPreviewFixture>.unmodifiable([
     name: 'send_message',
     contract: 'builtin.send_message@1',
     arguments: {'target': 'agent-preview', 'message': '已确认失败状态与错误正文均可见。'},
-    output: jsonEncode({
+    toolData: ToolDataArtifactPresent({
       'target': 'agent-preview',
       'messageId': 'agent-message:14:thread-preview:call-preview-send',
       'sequence': 1,
@@ -320,7 +337,7 @@ final toolDetailPreviewFixtures = List<ToolDetailPreviewFixture>.unmodifiable([
       'taskIds': ['task:preview-child'],
       'timeoutMs': 60000,
     },
-    output: jsonEncode({
+    toolData: ToolDataArtifactPresent({
       'tasks': [
         {
           'taskId': 'task:preview-child',
@@ -371,13 +388,20 @@ final toolDetailPreviewFixtures = List<ToolDetailPreviewFixture>.unmodifiable([
       'line': 64,
       'character': 8,
     },
-    output: '{"success":true,"operation":"goToDefinition","serverId":"rust-analyzer","resultCount":1,"fileCount":1,"result":"Found 1 definition:\\ncode/pl-lsp/src/runtime/registry.rs:64:8"}',
+    toolData: const ToolDataArtifactPresent({
+      'success': true,
+      'operation': 'goToDefinition',
+      'serverId': 'rust-analyzer',
+      'resultCount': 1,
+      'fileCount': 1,
+      'result': 'Found 1 definition:\ncode/pl-lsp/src/runtime/registry.rs:64:8',
+    }),
   ),
   ToolDetailPreviewFixture(
     name: 'lsp_capabilities',
     contract: 'builtin.lsp_capabilities@1',
     arguments: {'languageId': 'dart'},
-    output: jsonEncode({
+    toolData: ToolDataArtifactPresent({
       'servers': [
         {
           'id': 'dart-analysis',
@@ -394,7 +418,7 @@ final toolDetailPreviewFixtures = List<ToolDetailPreviewFixture>.unmodifiable([
     name: 'lsp_status',
     contract: 'builtin.lsp_status@1',
     arguments: {},
-    output: jsonEncode({
+    toolData: ToolDataArtifactPresent({
       'workspaceRoot': '/workspace/sample-project',
       'configurationDirectory': '/workspace/sample-project/.anywork/lsp',
       'servers': [
@@ -420,7 +444,7 @@ final toolDetailPreviewFixtures = List<ToolDetailPreviewFixture>.unmodifiable([
     name: 'plan_current',
     contract: 'builtin.plan_current@1',
     arguments: {},
-    output: jsonEncode(
+    toolData: ToolDataArtifactPresent(
       _planSnapshot(
         revision: 1,
         state: 'awaitingConfirmation',
@@ -432,7 +456,7 @@ final toolDetailPreviewFixtures = List<ToolDetailPreviewFixture>.unmodifiable([
     name: 'plan_next',
     contract: 'builtin.plan_next@1',
     arguments: {},
-    output: jsonEncode({
+    toolData: ToolDataArtifactPresent({
       'revision': 1,
       'state': 'awaitingConfirmation',
       'transitions': _awaitingPlanTransitions,
@@ -442,7 +466,7 @@ final toolDetailPreviewFixtures = List<ToolDetailPreviewFixture>.unmodifiable([
     name: 'plan_history',
     contract: 'builtin.plan_history@1',
     arguments: {},
-    output: jsonEncode({
+    toolData: ToolDataArtifactPresent({
       'revision': 1,
       'state': 'awaitingConfirmation',
       'history': [
@@ -464,7 +488,7 @@ final toolDetailPreviewFixtures = List<ToolDetailPreviewFixture>.unmodifiable([
     name: 'plan_submit',
     contract: 'builtin.plan_submit@1',
     arguments: {'expectedRevision': 0, 'plan': _previewPlanMarkdown},
-    output: jsonEncode({
+    toolData: ToolDataArtifactPresent({
       'accepted': true,
       'code': 'submitted',
       'operation': 'submit',
@@ -480,7 +504,7 @@ final toolDetailPreviewFixtures = List<ToolDetailPreviewFixture>.unmodifiable([
     name: 'plan_restart',
     contract: 'builtin.plan_restart@1',
     arguments: {'expectedRevision': 1, 'reason': '补充窄屏错误状态验证'},
-    output: jsonEncode({
+    toolData: ToolDataArtifactPresent({
       'accepted': true,
       'code': 'restarted',
       'operation': 'restart',
@@ -497,7 +521,7 @@ final toolDetailPreviewFixtures = List<ToolDetailPreviewFixture>.unmodifiable([
     name: 'workflow_current',
     contract: 'builtin.workflow_current@1',
     arguments: {},
-    output: jsonEncode(
+    toolData: ToolDataArtifactPresent(
       _workflowSnapshot(
         revision: 3,
         currentStateId: 'implement',
@@ -509,7 +533,7 @@ final toolDetailPreviewFixtures = List<ToolDetailPreviewFixture>.unmodifiable([
     name: 'workflow_next',
     contract: 'builtin.workflow_next@1',
     arguments: {},
-    output: jsonEncode({
+    toolData: ToolDataArtifactPresent({
       'modeId': _previewWorkflowModeId,
       'runId': _previewWorkflowRunId,
       'revision': 3,
@@ -527,7 +551,7 @@ final toolDetailPreviewFixtures = List<ToolDetailPreviewFixture>.unmodifiable([
     name: 'workflow_graph',
     contract: 'builtin.workflow_graph@1',
     arguments: {},
-    output: jsonEncode({
+    toolData: ToolDataArtifactPresent({
       'modeId': _previewWorkflowModeId,
       'revision': 3,
       'graphRevision': 1,
@@ -551,7 +575,7 @@ final toolDetailPreviewFixtures = List<ToolDetailPreviewFixture>.unmodifiable([
     name: 'workflow_history',
     contract: 'builtin.workflow_history@1',
     arguments: {},
-    output: jsonEncode({
+    toolData: ToolDataArtifactPresent({
       'modeId': _previewWorkflowModeId,
       'runId': _previewWorkflowRunId,
       'revision': 3,
@@ -589,7 +613,7 @@ final toolDetailPreviewFixtures = List<ToolDetailPreviewFixture>.unmodifiable([
         'evidence': ['检查了 37 个工具契约的预览 fixture。'],
       },
     },
-    output: jsonEncode({
+    toolData: ToolDataArtifactPresent({
       'accepted': true,
       'code': 'transitioned',
       'operationRevision': 4,
@@ -609,7 +633,7 @@ final toolDetailPreviewFixtures = List<ToolDetailPreviewFixture>.unmodifiable([
       'expectedStateId': 'verify',
       'reason': '发现遗漏的错误显示场景',
     },
-    output: jsonEncode({
+    toolData: ToolDataArtifactPresent({
       'accepted': true,
       'code': 'restarted',
       'operationRevision': 5,
@@ -665,27 +689,22 @@ final toolDetailPreviewFixtures = List<ToolDetailPreviewFixture>.unmodifiable([
 
 final _showFilesArtifact = jsonEncode([
   {
-    'kind': 'opaque',
-    'payload': {
-      'format': 'pl.tool.files',
-      'version': 1,
-      'content': jsonEncode({
-        'caption': '搜索结果摘要附件',
-        'files': [
-          {
-            'filename': 'synthetic-landscape-320x180.png',
-            'status': 'ready',
-            'resource': {
-              'id': TimelinePreviewFixtures.imageAttachment.id,
-              'contentDigest': 'sha256:ea87b62b175ebce0eebcf5b19d6130789ed17bc61bfe59e8a4b0555f49faf602',
-              'mediaType': TimelinePreviewFixtures.imageAttachment.mediaType,
-              'byteLen': TimelinePreviewFixtures.imageBytes.length,
-            },
-            'modality': 'image',
-            'origin': {'kind': 'archive'},
+    'fileDisplay': {
+      'caption': '搜索结果摘要附件',
+      'files': [
+        {
+          'filename': 'synthetic-landscape-320x180.png',
+          'status': 'ready',
+          'resource': {
+            'id': TimelinePreviewFixtures.imageAttachment.id,
+            'contentDigest': 'sha256:ea87b62b175ebce0eebcf5b19d6130789ed17bc61bfe59e8a4b0555f49faf602',
+            'mediaType': TimelinePreviewFixtures.imageAttachment.mediaType,
+            'byteLen': TimelinePreviewFixtures.imageBytes.length,
           },
-        ],
-      }),
+          'modality': 'image',
+          'origin': {'kind': 'archive'},
+        },
+      ],
     },
   },
 ]);
@@ -708,7 +727,13 @@ final timedOutToolPreviewFixture = ToolDetailPreviewFixture(
   name: 'exec',
   contract: 'builtin.exec@2',
   arguments: const {'command': 'cargo test -p pl-core'},
-  output: '{"stdout":{"content":"测试运行超过时限。"},"timedOut":true,"exitCode":124}',
+  toolData: const ToolDataArtifactPresent({
+    'taskId': 'task:internal-preview',
+    'stdout': '测试运行超过时限。',
+    'stderr': '',
+    'timedOut': true,
+    'exitCode': 124,
+  }),
   status: 'failed',
   error: '命令执行超时。',
   timedOut: true,

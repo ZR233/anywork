@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 pub const TOOL_UPDATE_TODO_LIST: &str = "update_todo_list";
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum TodoStatus {
     Pending,
@@ -22,7 +22,7 @@ impl TodoStatus {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TodoItem {
     pub step: String,
@@ -82,7 +82,7 @@ impl From<TodoListInputStatus> for TodoStatus {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 struct TodoDocument {
     explanation: Option<String>,
@@ -174,7 +174,8 @@ impl pl_agent_tool::typed::TypedTool for TodoUpdateTool {
         let document = todo_document(input).map_err(decode)?;
         let encoded =
             serde_json::to_string(&document).map_err(pl_core::tool::opaque::ToolError::new)?;
-        let payload = pl_core::context::OpaquePayload::new("pl.tool.todo", 1, encoded.clone())
+        let data = serde_json::to_value(document).map_err(pl_core::tool::opaque::ToolError::new)?;
+        let payload = pl_core::context::OpaquePayload::new("pl.tool.todo", 1, encoded)
             .map_err(pl_core::tool::opaque::ToolError::new)?;
         let previous = context.extensions.get("pl.tool.todo");
         if previous.is_some_and(|record| {
@@ -190,16 +191,10 @@ impl pl_agent_tool::typed::TypedTool for TodoUpdateTool {
             vec![pl_core::thread::extensions::ExtensionMutation::Put {
                 id: "pl.tool.todo".into(),
                 expected_revision: previous.map(|record| record.revision),
-                payload: payload.clone(),
+                payload,
             }]
         };
-        Ok(pl_core::tool::ToolOutput::new(
-            payload,
-            vec![pl_core::context::ContextContent::Text {
-                text: std::sync::Arc::from(encoded),
-            }],
-        )
-        .with_extension_mutations(mutations))
+        Ok(pl_core::tool::ToolOutput::json(data).with_extension_mutations(mutations))
     }
 }
 
@@ -217,6 +212,8 @@ pub fn todo_update_tool_definition() -> pl_agent_tool::ToolDefinition {
         pl_agent_tool::typed::input_schema_for::<TodoListInput>(),
     )
     .expect("static tool definition")
+    .with_output_schema(crate::binding::program_schema::<TodoDocument>())
+    .expect("static todo result schema")
 }
 
 const TODO_UPDATE_TOOL_NAME: &str = crate::todo::TOOL_UPDATE_TODO_LIST;

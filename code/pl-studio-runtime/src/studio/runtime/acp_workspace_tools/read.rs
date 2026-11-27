@@ -2,7 +2,7 @@ use super::{OperationDomain, WorkspaceTools};
 use crate::studio::runtime::acp_host_mcp::{HostBinding, attach_binding, prepare_binding};
 use crate::tool_json::JsonToolInput;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use pl_agent_tool::{Tool, ToolDefinition, typed::input_schema_for};
+use pl_agent_tool::{Tool, ToolData, ToolDefinition, ToolResult, typed::input_schema_for};
 use pl_core::{context::OpaquePayload, tool::opaque::ToolError};
 use pl_studio_mcp::{HostContent, HostResult, JsonInput};
 use pl_tool::{
@@ -10,7 +10,7 @@ use pl_tool::{
     image::{ImageOutputLimits, TOOL_VIEW_IMAGE, ViewImageInput, prepare_workspace_image},
     workspace_file::{ExecutorWorkspaceFileBackend, WorkspaceFileBackend, read_regular_file},
 };
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{
     collections::BTreeMap,
     sync::{Arc, Weak},
@@ -52,7 +52,8 @@ pub(super) fn bind(
                 "read_text_file",
                 "Read a UTF-8 file from the current local or SSH workspace (up to 256 KiB).",
                 input_schema_for::<TextInput>(),
-            )?,
+            )?
+            .with_output_schema(pl_agent_tool::typed::output_schema_for::<String>())?,
         ),
         (
             ReadKind::Image,
@@ -64,7 +65,7 @@ pub(super) fn bind(
         ),
     ];
     for (kind, definition) in definitions {
-        let projection = prepare_binding(bindings, &definition, JsonInput::Object)?;
+        let projection = prepare_binding(bindings, &definition, JsonInput::Object, true)?;
         let tool = ReadTool {
             definition,
             kind,
@@ -80,15 +81,18 @@ pub(super) fn bind(
                     host.authorize_workspace_call(&context).await?;
                     Ok(match handle.execute(input, context).await {
                         Ok(content) => HostResult {
-                            value: Value::Null,
+                            result: ToolResult::new(
+                                match &content {
+                                    HostContent::Text(text) => {
+                                        ToolData::Value(Value::String(text.clone()))
+                                    }
+                                    HostContent::Image { .. } => ToolData::Absent,
+                                },
+                                vec![content],
+                            ),
                             is_error: false,
-                            content: Some(content),
                         },
-                        Err(error) => HostResult {
-                            value: json!({"error": error.to_string()}),
-                            is_error: true,
-                            content: None,
-                        },
+                        Err(error) => super::super::acp_host_mcp::host_result(Err(error)),
                     })
                 })
             },

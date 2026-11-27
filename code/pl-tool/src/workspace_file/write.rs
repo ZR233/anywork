@@ -5,7 +5,7 @@ use super::{
 };
 use crate::{file::WriteFileInput, workspace::ToolWorkspace};
 use pl_core::{
-    context::{ContextContent, OpaquePayload},
+    context::ContextContent,
     tool::{ToolOutput, opaque::ToolError},
 };
 use std::sync::Arc;
@@ -56,14 +56,9 @@ impl<B: WorkspaceFileBackend + 'static> pl_agent_tool::typed::TypedTool for Thre
             .execute(input, FileCapability(backend))
             .await
             .map_err(ToolError::new)?;
-        let payload = OpaquePayload::new(
-            "pl.tool.file-write",
-            1,
-            serde_json::to_string(&receipt).map_err(ToolError::new)?,
-        )
-        .map_err(ToolError::new)?;
-        Ok(ToolOutput::new(
-            payload,
+        let data = serde_json::to_value(&receipt).map_err(ToolError::new)?;
+        Ok(ToolOutput::from_data(
+            data,
             vec![ContextContent::Text {
                 text: Arc::from(format!(
                     "Wrote {} bytes to {}",

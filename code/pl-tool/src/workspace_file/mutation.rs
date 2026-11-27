@@ -3,7 +3,7 @@ use crate::workspace_file::{ExecutorWorkspaceFileBackend, WorkspaceFileBackend};
 use crate::{tool_error, workspace::ToolWorkspace};
 use pl_agent_tool::typed::{TypedTool, decode_json};
 use pl_core::{
-    context::{ContextContent, OpaquePayload},
+    context::OpaquePayload,
     tool::{ToolOutput, opaque::ToolError},
 };
 use pl_protocol::{PureError, Result};
@@ -136,10 +136,7 @@ impl pl_agent_tool::Tool for WorkspaceMutationTool {
                 .await
                 .map_err(|error| mutation_error(self.kind.name(), error))?,
         };
-        Ok(ToolOutput::new(
-            OpaquePayload::text(text.clone()),
-            vec![ContextContent::Text { text: text.into() }],
-        ))
+        Ok(ToolOutput::text(text))
     }
 }
 
@@ -301,20 +298,20 @@ mod tests {
             kind, kind.definition(), backend.clone(), workspace.clone(),
         );
         let create = mutation(WorkspaceMutationKind::CreateDirectory).execute(input(json!({"path":"nested"})), context()).await?;
-        ensure!(create.payload().content() == "Created directory nested");
+        ensure!(create.data().unwrap() == "Created directory nested");
         let write = ThreadWriteFileTool::new(backend.clone(), workspace.clone());
         let written = TypedTool::execute(&write, pl_tool_filesystem::write_file::WriteFileInput {
             path: "nested/a".into(), content: "original\n".into(), mode: pl_tool_filesystem::WriteMode::Create,
         }, context()).await?;
-        ensure!(written.payload().format() == "pl.tool.file-write");
-        let value: serde_json::Value = serde_json::from_str(written.payload().content())?;
+
+        let value: serde_json::Value = written.data().expect("tool declares result data").clone();
         ensure!(value == json!({"path":"nested/a","mode":"create","bytesWritten":9}));
         ensure!(TypedTool::execute(&write, pl_tool_filesystem::write_file::WriteFileInput {
             path: "nested/a".into(), content: "lost".into(), mode: pl_tool_filesystem::WriteMode::Create,
         }, context()).await.is_err());
         let stat = TypedTool::execute(&ThreadStatPathTool::new(backend.clone()),
             pl_tool_filesystem::PathInput { path: "missing".into() }, context()).await?;
-        ensure!(serde_json::from_str::<serde_json::Value>(stat.payload().content())? == json!({"path":"missing","exists":false}));
+        ensure!(stat.data().expect("tool declares result data").clone() == json!({"path":"missing","exists":false}));
         mutation(WorkspaceMutationKind::Copy).execute(input(json!({"from":"nested/a","to":"target","collision":"failIfExists"})), context()).await?;
         let collision = mutation(WorkspaceMutationKind::Move).execute(input(json!({"from":"nested/a","to":"target","collision":"failIfExists"})), context()).await.unwrap_err();
         ensure!(collision.source.to_string().contains("destination already exists"));
@@ -337,7 +334,8 @@ mod tests {
         let kind = WorkspaceFileToolKind::ApplyPatch;
         let patch = ThreadWorkspaceFileTool::new(kind, backend.clone(), workspace.clone(), kind.definition());
         let output = patch.execute(OpaquePayload::text("*** Begin Patch\n*** Update File: nested/a\n@@\n-original\n+patched\n*** End Patch"), context()).await?;
-        ensure!(output.payload().format() == "pl.tool.workspace-file");
+        ensure!(output.data().unwrap()["changedFiles"] == json!(["nested/a"]));
+
         ensure!(std::fs::read(root.join("nested/a"))? == b"patched\n");
         ensure!(mutation(WorkspaceMutationKind::CreateDirectory).execute(input(json!({"path":"../outside"})), context()).await.is_err());
         anyhow::Ok(())
@@ -520,7 +518,7 @@ mod tests {
                 }
                 let output = output?;
                 ensure!(
-                    output.payload().content()
+                    output.data().unwrap().as_str().unwrap()
                         == format!(
                             "{} {source} to {target}",
                             if moving { "Moved" } else { "Copied" }

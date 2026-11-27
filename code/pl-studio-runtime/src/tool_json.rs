@@ -1,7 +1,7 @@
 //! JSON argument and receipt handling for Studio-owned tool adapters.
 
 use pl_core::{
-    context::{ContextContent, OpaquePayload, content_hash},
+    context::{OpaquePayload, content_hash},
     thread::extensions::ExtensionMutation,
     tool::{ToolOutput, opaque::ToolError},
 };
@@ -33,12 +33,10 @@ impl<'a> JsonToolInput<'a> {
     }
 }
 
-pub(crate) fn json_output(format: &str, value: &impl Serialize) -> Result<ToolOutput, ToolError> {
-    let text = serde_json::to_string(value).map_err(ToolError::new)?;
-    Ok(ToolOutput::new(
-        OpaquePayload::new(format, 1, text.clone()).map_err(ToolError::new)?,
-        vec![ContextContent::Text { text: text.into() }],
-    ))
+pub(crate) fn json_output(value: &impl Serialize) -> Result<ToolOutput, ToolError> {
+    serde_json::to_value(value)
+        .map(ToolOutput::json)
+        .map_err(ToolError::new)
 }
 
 pub(crate) fn put_extension(

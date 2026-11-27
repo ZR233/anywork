@@ -24,7 +24,6 @@ pub use executor::{
     DeferredWorkspaceFile, ExecutorWorkspaceFileBackend, WorkspaceDirectoryReader,
     WorkspaceDownloadError, WorkspaceFileError, load_workspace_instructions,
 };
-pub use ops::WorkspaceFileToolExecution;
 pub use patch::apply_patch_to_backend;
 pub use schema::*;
 

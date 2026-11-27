@@ -19,6 +19,36 @@ pub struct Output {
     pub preview: String,
 }
 
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct ProgramResult {
+    status: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    content: String,
+}
+
+pub fn output_schema() -> serde_json::Value {
+    schemars::generate::SchemaSettings::draft2020_12()
+        .for_serialize()
+        .into_generator()
+        .into_root_schema_for::<ProgramResult>()
+        .to_value()
+}
+
+impl Output {
+    pub fn into_result(self) -> Result<pl_agent_tool::ToolResult<String>, serde_json::Error> {
+        let data = serde_json::to_value(ProgramResult {
+            status: self.response.status,
+            title: self.response.title,
+            content: self.response.content,
+        })?;
+        Ok(
+            pl_agent_tool::ToolResult::from_data(data, vec![self.preview])
+                .with_details(serde_json::json!({"rawResponse": self.response.raw_response})),
+        )
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum FetchError<E: std::error::Error + 'static> {
     #[error("invalid deepseek tools url: {0}")]

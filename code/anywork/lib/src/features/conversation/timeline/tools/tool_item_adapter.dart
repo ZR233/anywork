@@ -1,11 +1,16 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:anywork_client/models.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../l10n/app_localizations.dart';
 import '../state/chat_item_presentation.dart';
 import '../state/timeline_display_unit.dart';
+import '../state/tool_data_artifact.dart';
 import '../state/tool_presentation.dart';
 import '../widgets/timeline_activity_row.dart';
+import '../widgets/timeline_content_range_view.dart';
 import 'support/tool_detail_values.dart';
 import 'support/tool_status_labels.dart';
 
@@ -349,8 +354,15 @@ class TimelineToolItemController extends ChangeNotifier {
   TimelineToolPresentation _item;
   TimelineToolIcon? _iconOverride;
   Object _callbackEpoch = Object();
+  ToolDataArtifact? _windowToolData;
+  String? _windowArtifactKey;
+  int? _windowArtifactLength;
+  int _nextArtifactOffset = 0;
+  final BytesBuilder _artifactBytes = BytesBuilder(copy: false);
 
   TimelineToolPresentation get item => _item;
+
+  ToolDataArtifact get toolData => _windowToolData ?? _item.toolData;
 
   /// Current frame epoch token bound to declared-content callbacks.
   Object get callbackEpoch => _callbackEpoch;
@@ -377,8 +389,21 @@ class TimelineToolItemController extends ChangeNotifier {
 
   /// Updates the current [TimelineToolPresentation] without retiring state.
   void updateItem(TimelineToolPresentation nextItem) {
+    final sameArtifactSource =
+        _item.outputArtifactIdentity == nextItem.outputArtifactIdentity &&
+        _sameStrings(_item.outputArtifacts, nextItem.outputArtifacts);
+    if (!sameArtifactSource) _resetToolDataWindow();
     _item = nextItem;
     onItemUpdated();
+  }
+
+  static bool _sameStrings(List<String> left, List<String> right) {
+    if (identical(left, right)) return true;
+    if (left.length != right.length) return false;
+    for (var index = 0; index < left.length; index++) {
+      if (left[index] != right[index]) return false;
+    }
+    return true;
   }
 
   /// Retires the active callback epoch, resets programmatic icon override and
@@ -406,6 +431,89 @@ class TimelineToolItemController extends ChangeNotifier {
     onAcceptedOutputWindow(window);
   }
 
+  /// Accumulates successive, authorized windows of the explicit artifact body.
+  /// The artifact is decoded only after the complete JSON value has arrived.
+  void notifyToolDataArtifactWindowRead(
+    Object epoch,
+    String bodyKey,
+    int bodyByteLength,
+    BodyWindow window, {
+    TimelineExpansionIntent? group,
+  }) {
+    if (!identical(epoch, _callbackEpoch) ||
+        (group != null && (!group.bodyActive || group.isRetired)) ||
+        window.totalBytes != bodyByteLength) {
+      return;
+    }
+    if (window.offset == 0) {
+      _resetToolDataWindow();
+      _windowArtifactKey = bodyKey;
+      _windowArtifactLength = bodyByteLength;
+      if (bodyByteLength > timelineBodyWindowMaxBytes) {
+        _windowToolData = const ToolDataArtifactInvalid(
+          'toolData artifact 超过 64 KiB 解析上限；结构化数据未显示',
+        );
+        notifyListeners();
+        return;
+      }
+    }
+    if (_windowArtifactKey != bodyKey ||
+        _windowArtifactLength != bodyByteLength ||
+        window.offset != _nextArtifactOffset) {
+      return;
+    }
+    if (_windowToolData is ToolDataArtifactInvalid) return;
+    final encoded = window.bytesBase64;
+    final List<int> bytes;
+    try {
+      bytes = encoded == null
+          ? utf8.encode(window.text ?? '')
+          : base64Decode(encoded);
+    } on FormatException {
+      _artifactBytes.clear();
+      _windowToolData = const ToolDataArtifactInvalid(
+        'toolData artifact window 编码无效',
+      );
+      notifyListeners();
+      return;
+    }
+    if (_nextArtifactOffset + bytes.length > timelineBodyWindowMaxBytes) {
+      _artifactBytes.clear();
+      _windowToolData = const ToolDataArtifactInvalid(
+        'toolData artifact 超过 64 KiB 解析上限；结构化数据未显示',
+      );
+      notifyListeners();
+      return;
+    }
+    _artifactBytes.add(bytes);
+    _nextArtifactOffset += bytes.length;
+    if (!window.eof) return;
+    if (_nextArtifactOffset != bodyByteLength) {
+      _windowToolData = const ToolDataArtifactInvalid(
+        'toolData artifact 正文长度不匹配',
+      );
+    } else {
+      try {
+        _windowToolData = ToolDataArtifact.parseArtifacts([
+          utf8.decode(_artifactBytes.takeBytes()),
+        ]);
+      } on FormatException {
+        _windowToolData = const ToolDataArtifactInvalid(
+          'toolData artifact 不是有效 UTF-8',
+        );
+      }
+    }
+    notifyListeners();
+  }
+
+  void _resetToolDataWindow() {
+    _windowToolData = null;
+    _windowArtifactKey = null;
+    _windowArtifactLength = null;
+    _nextArtifactOffset = 0;
+    _artifactBytes.clear();
+  }
+
   @protected
   void onItemUpdated() {}
 
@@ -413,7 +521,9 @@ class TimelineToolItemController extends ChangeNotifier {
   void onAcceptedOutputWindow(BodyWindow window) {}
 
   @protected
-  void onRetireTransientState() {}
+  void onRetireTransientState() {
+    _resetToolDataWindow();
+  }
 }
 
 /// Exposes the current item's [TimelineToolItemController] to icon builders
@@ -491,6 +601,10 @@ abstract class TimelineToolItemAdapter {
   /// Argument decoding and body-window reading rules for this tool.
   TimelineToolBodyPolicy get bodyPolicy => const TimelineToolBodyPolicy();
 
+  /// Whether this adapter consumes explicit values from `tool.output-artifacts`.
+  /// This is independent of whether authored `tool.result` text is read.
+  bool get readsToolData => true;
+
   /// Whether attachments are backed by `tool.output-artifacts` media records.
   bool get usesFileArtifactsMedia => false;
 
@@ -532,7 +646,7 @@ abstract class TimelineToolItemAdapter {
     if (!bodyPolicy.requiresAcceptance || item.statusString != 'succeeded') {
       return null;
     }
-    return switch ((acceptance ?? decodeAcceptance(item.output)).state) {
+    return switch ((acceptance ?? decodeAcceptanceData(item.toolData)).state) {
       ToolAcceptance.pending => l10n.timelineToolResultPending,
       ToolAcceptance.rejected => rejectionLabel(l10n),
       ToolAcceptance.accepted => null,
@@ -541,6 +655,9 @@ abstract class TimelineToolItemAdapter {
 
   /// Decodes semantic acceptance projection from serialized output text.
   ToolAcceptanceProjection decodeAcceptance(String text) =>
+      const ToolAcceptanceProjection(ToolAcceptance.pending);
+
+  ToolAcceptanceProjection decodeAcceptanceData(ToolDataArtifact data) =>
       const ToolAcceptanceProjection(ToolAcceptance.pending);
 
   /// Builds acceptance explanation rows when accepted output is pending or
@@ -564,11 +681,22 @@ abstract class TimelineToolItemAdapter {
   };
 
   /// Whether a declared `tool.result` window should be opened for [statusString].
-  bool readsOutput(String statusString, {String output = ''}) =>
-      !bodyPolicy.omitSuccessOutput ||
-      statusString != 'succeeded' ||
-      (bodyPolicy.requiresAcceptance &&
-          decodeAcceptance(output).state != ToolAcceptance.accepted);
+  bool readsOutput(
+    String statusString, {
+    String output = '',
+    ToolDataArtifact toolData = const ToolDataArtifactAbsent(),
+  }) {
+    if (bodyPolicy.readsStructuredOutput &&
+        toolData is ToolDataArtifactPresent) {
+      return statusString == 'cancelled' || statusString == 'interrupted';
+    }
+    if (bodyPolicy.omitSuccessOutput &&
+        statusString == 'succeeded' &&
+        bodyPolicy.requiresAcceptance) {
+      return decodeAcceptanceData(toolData).state != ToolAcceptance.accepted;
+    }
+    return !bodyPolicy.omitSuccessOutput || statusString != 'succeeded';
+  }
 
   /// Safely decodes raw arguments into immutable semantic detail values.
   List<ToolDetailValue> decodeInput(AppLocalizations l10n, String text) =>
@@ -577,6 +705,14 @@ abstract class TimelineToolItemAdapter {
   /// Safely decodes raw output into immutable semantic detail values.
   List<ToolDetailValue> decodeOutput(AppLocalizations l10n, String text) =>
       const [];
+
+  /// Projects explicit producer data when available, while leaving authored
+  /// result text on its separate text path.
+  List<ToolDetailValue> decodeOutputData(
+    AppLocalizations l10n,
+    String text,
+    ToolDataArtifact data,
+  ) => decodeOutput(l10n, text);
 
   /// Safely decodes artifact payload summaries into immutable detail values.
   List<ToolDetailValue> decodeArtifacts(AppLocalizations l10n, String text) =>
@@ -597,6 +733,13 @@ abstract class TimelineToolItemAdapter {
     TimelineToolItemContext context, {
     ToolAcceptanceProjection? acceptance,
   });
+
+  /// Builds the projection for explicit `tool.output-artifacts` program data.
+  /// This is independent of authored result text and its read policy.
+  Widget? buildToolDataBody(
+    TimelineToolItemContext context, {
+    ToolAcceptanceProjection? acceptance,
+  }) => null;
 
   /// Builds window body content when an on-demand declared content reader loads.
   Widget buildWindowBody(

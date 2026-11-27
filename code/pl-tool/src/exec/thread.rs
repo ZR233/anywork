@@ -1,7 +1,7 @@
 //! Command execution through the opaque Thread contract.
 use std::{fmt, future::Future, sync::Arc, time::Duration};
 
-use pl_core::context::{OpaquePayload, ResourceReference};
+use pl_core::context::{ContextContent, OpaquePayload, ResourceReference};
 use pl_core::thread::cold::{
     ColdStoreError, OutputRepair, OutputRetryFuture, OutputRetryObligation, OutputRetryOutcome,
     OutputStorageFault, StorageFaultKind,
@@ -221,6 +221,7 @@ impl<B: CommandBackend> pl_agent_tool::Tool for ThreadWriteStdinTool<B> {
                     processes: ThreadInputPort {
                         processes: self.processes.clone(),
                         tasks: context.tasks.clone(),
+                        receipt: super::output::current_receipt(&context),
                     },
                     cancellation: context.cancellation.clone(),
                 },
@@ -234,18 +235,15 @@ impl<B: CommandBackend> pl_agent_tool::Tool for ThreadWriteStdinTool<B> {
                 pl_tool_command::write_stdin::StdinError::Cancelled => {
                     ToolError::new(pl_core::thread::ThreadError::Cancelled)
                 }
-                pl_tool_command::write_stdin::StdinError::Encoding(error) => ToolError::new(error),
             })?;
-        let outcome = match &result {
-            pl_tool_command::write_stdin::StdinResult::Terminal { receipt_json } => {
-                return super::output::receipt_output("pl.tool.stdin", receipt_json.clone());
-            }
-            pl_tool_command::write_stdin::StdinResult::Observed { outcome, .. } => *outcome,
+        let output = ToolOutput::new(
+            result
+                .result(super::output::current_receipt(&context).as_deref())
+                .map_content(|text| ContextContent::Text { text: text.into() }),
+        );
+        let pl_tool_command::write_stdin::StdinResult::Observed { outcome, .. } = result else {
+            return Ok(output);
         };
-        let text = result
-            .encode(super::output::current_receipt(&context))
-            .map_err(ToolError::new)?;
-        let output = super::output::receipt_output("pl.tool.exec", text)?;
         match outcome {
             pl_tool_command::write_stdin::InputOutcome::Complete => Ok(output),
             pl_tool_command::write_stdin::InputOutcome::Cancelled => Err(ToolError::new(pl_core::thread::ThreadError::Cancelled).with_output(output)),
@@ -287,6 +285,8 @@ pub enum ExecFailure {
     InvalidInput,
     #[error("command did not complete successfully: {0}")]
     Process(String),
+    #[error("command output capture failed: {}", .0.message())]
+    Capture(pl_tool_command::process::CommandCaptureFailure),
     /// 命令输出触及本 operation 的单命令落盘上限：命令已被终止，已写出的部分保留并照常归档。
     ///
     /// 这是预期内的容量终止，不是可靠保存故障：它不欠任何可靠保存义务，进程管理器也不会为它
@@ -393,27 +393,25 @@ impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadE
             }
         }
         let snapshot = &result.snapshot;
-        let text = result
-            .encode(&resources, super::output::current_receipt(&context))
+        let receipt = super::output::current_receipt(&context);
+        let authored = result
+            .result(&resources, receipt.as_deref())
             .map_err(ToolError::new)?;
-        let output = super::output::archived_output(text, &resources)?;
+        let output = ToolOutput::new(
+            authored.map_content(|text| ContextContent::Text { text: text.into() }),
+        );
         if let Some(error) = archive_error {
-            if matches!(
-                snapshot.state.final_result(),
-                Some(CommandProcessFinalResult::Cancelled)
-            ) {
-                return Err(
-                    ToolError::new(pl_core::thread::ThreadError::Cancelled).with_output(output)
-                );
-            }
             return Err(error.with_output(output));
         }
         match result.outcome() {
             ExecOutcome::Cancelled => {
                 Err(ToolError::new(pl_core::thread::ThreadError::Cancelled).with_output(output))
             }
-            ExecOutcome::CaptureFailed => Err(ToolError::new(ExecFailure::Process(
-                snapshot.message.clone(),
+            ExecOutcome::CaptureFailed => Err(ToolError::new(ExecFailure::Capture(
+                snapshot
+                    .output_failure
+                    .clone()
+                    .expect("capture failure has an observed cause"),
             ))
             .with_output(output)),
             ExecOutcome::OutputLimit(limit) => {
@@ -436,9 +434,12 @@ impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadE
                         && snapshot.output_failure.is_none()
                         && snapshot.signal.is_none() =>
                     {
-                        ExecFailure::NonzeroExit {
-                            exit_code: *exit_code,
-                        }
+                        return Err(ToolError::operation(
+                            ExecFailure::NonzeroExit {
+                                exit_code: *exit_code,
+                            },
+                            output,
+                        ));
                     }
                     _ => ExecFailure::Process(result.snapshot.message),
                 };
@@ -533,6 +534,7 @@ impl<B: CommandBackend> ProcessExecutor for ThreadCommandPort<B> {
 struct ThreadInputPort<B: CommandBackend> {
     processes: Arc<CommandProcessManager<B>>,
     tasks: Option<Arc<dyn crate::invocation::CommandTaskAccess>>,
+    receipt: Option<String>,
 }
 impl<B: CommandBackend> ProcessInput for ThreadInputPort<B> {
     type Target = String;
@@ -558,7 +560,10 @@ impl<B: CommandBackend> ProcessInput for ThreadInputPort<B> {
             || target.status != pl_core::thread::task::TaskStatus::Running
             || target.cancel_requested
         {
-            return Err(super::output::stdin_unavailable(&target));
+            return Err(super::output::stdin_unavailable(
+                self.receipt.clone(),
+                &target,
+            ));
         }
         Ok(InputTarget::Live(safe_identity(&target.call_id)))
     }

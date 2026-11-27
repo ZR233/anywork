@@ -7,6 +7,7 @@ use std::{
     time::Duration,
 };
 
+use pl_agent_tool::{ToolData, ToolResult};
 use pl_studio_mcp::{
     HostCatalog, HostContent, HostError, HostInvocation, HostResult, HostTool, HostTools,
 };
@@ -66,11 +67,10 @@ impl HostTools for Backend {
             return Err(HostError::Closed);
         }
         if let Some(size) = request.arguments.get("generate").and_then(Value::as_u64) {
-            return Ok(HostResult {
-                value: Value::String("x".repeat(size as usize)),
-                is_error: false,
-                content: None,
-            });
+            return Ok(HostResult::json(
+                Value::String("x".repeat(size as usize)),
+                false,
+            ));
         }
         if let Some(id) = request.arguments.get("id").and_then(Value::as_u64) {
             assert!(self.0.echoes.lock().unwrap().insert(id), "replayed call");
@@ -78,17 +78,29 @@ impl HostTools for Backend {
             tokio::task::yield_now().await;
         }
         let content = match request.arguments.get("content").and_then(Value::as_str) {
-            Some("text") => Some(HostContent::Text("first line\n第二行".into())),
-            Some("image") => Some(HostContent::Image {
+            Some("text") => vec![HostContent::Text("first line\n第二行".into())],
+            Some("image") => vec![HostContent::Image {
                 data: "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7".into(),
                 mime_type: "image/gif".into(),
-            }),
-            _ => None,
+            }],
+            _ => vec![HostContent::Text(
+                Value::Object(request.arguments.clone()).to_string(),
+            )],
+        };
+        let data = if request.arguments.get("noData") == Some(&Value::Bool(true)) {
+            ToolData::Absent
+        } else {
+            ToolData::Value(
+                request
+                    .arguments
+                    .get("returnValue")
+                    .cloned()
+                    .unwrap_or_else(|| Value::Object(request.arguments.clone())),
+            )
         };
         Ok(HostResult {
             is_error: request.arguments.get("error") == Some(&json!(true)),
-            value: Value::Object(request.arguments),
-            content,
+            result: ToolResult::new(data, content),
         })
     }
 }

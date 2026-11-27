@@ -147,10 +147,10 @@ pub(crate) fn checkpoint(checkpoint: &mut ThreadCheckpoint) -> Result<()> {
     }
     for record in std::sync::Arc::make_mut(&mut checkpoint.state.context.records) {
         for content in &mut record.content {
-            if let ContextContent::Opaque { payload } = content
+            if let ContextContent::Opaque { payload } | ContextContent::Media { payload } = content
                 && let Some(current) = normalize(payload)?
             {
-                *content = ContextContent::Opaque { payload: current };
+                *payload = current;
             }
         }
     }

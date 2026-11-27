@@ -3,11 +3,9 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
-use pl_core::context::{ContextContent, OpaquePayload};
 use pl_tool::{
     file_display::{
-        DeferredWorkspaceFile, FILE_DISPLAY_FORMAT, FileDisplayResult, TOOL_SHOW_FILES,
-        saved_file_display_receipt,
+        DeferredWorkspaceFile, FileDisplayResult, TOOL_SHOW_FILES, saved_file_display_receipt,
     },
     workspace_file::ExecutorWorkspaceFileBackend,
 };
@@ -119,7 +117,7 @@ impl StudioRuntime {
                 .chain(effects.iter().flat_map(|effect| effect.deliveries.iter()))
                 .find(|delivery| delivery.tool_id == TOOL_SHOW_FILES && delivery.call_id == call_id)
             {
-                return deferred_target(delivery.output.payload(), index);
+                return deferred_target(delivery.output.details(), index);
             }
         }
         let reader = self.store.open_history_reader(thread_id).await?;
@@ -149,8 +147,8 @@ impl StudioRuntime {
                 )
                 .await?
                 .context("File display receipt is missing")?;
-                let payload = file_display_payload(&body)?;
-                return deferred_target(&payload, index);
+                let details = file_display_details(&body)?;
+                return deferred_target(Some(&details), index);
             }
             anyhow::bail!("File display is not available")
         }
@@ -203,25 +201,25 @@ impl StudioRuntime {
     }
 }
 
-fn file_display_payload(body: &[u8]) -> Result<OpaquePayload> {
+fn file_display_details(body: &[u8]) -> Result<serde_json::Value> {
     let parts: Vec<serde_json::Value> = serde_json::from_slice(body)?;
-    let mut receipts = parts.into_iter().filter(|part| {
-        part["kind"] == "opaque" && part["payload"]["format"] == FILE_DISPLAY_FORMAT
-    });
+    let mut receipts = parts
+        .into_iter()
+        .filter(|part| part.get("fileDisplay").is_some());
     let receipt = receipts.next().context("File display receipt is missing")?;
     ensure!(
         receipts.next().is_none(),
         "File display has duplicate receipts"
     );
-    let ContextContent::Opaque { payload } = serde_json::from_value(receipt)? else {
-        anyhow::bail!("Invalid file display receipt");
-    };
-    Ok(payload)
+    Ok(receipt)
 }
 
-fn deferred_target(payload: &OpaquePayload, index: usize) -> Result<DeferredWorkspaceFile> {
+fn deferred_target(
+    details: Option<&serde_json::Value>,
+    index: usize,
+) -> Result<DeferredWorkspaceFile> {
     let receipt =
-        saved_file_display_receipt(payload)?.context("File display receipt is missing")?;
+        saved_file_display_receipt(details)?.context("File display receipt is missing")?;
     let Some(FileDisplayResult::Deferred { target, .. }) = receipt.files.into_iter().nth(index)
     else {
         anyhow::bail!("File display item does not have a deferred source");

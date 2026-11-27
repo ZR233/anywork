@@ -1388,12 +1388,10 @@ async fn attempt_and_delivery_revisions_are_idempotent_without_effect_fences() -
         target: Default::default(),
         call_id: "shared-id".into(),
         tool_id: "tool".into(),
-        output: pl_core::tool::ToolOutput::new(
-            pl_core::context::OpaquePayload::text("result"),
-            vec![],
-        ),
+        output: pl_core::tool::ToolOutput::text("result".into()),
         delivered_context: vec![],
         outcome: pl_core::thread::ToolOutcome::Succeeded,
+        cancellation_cause: None,
     }]
     .into();
     for sequence in [1, 1, 3, 2, 3] {

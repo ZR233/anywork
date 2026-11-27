@@ -3,7 +3,7 @@ use super::{
     FileDisplayOrigin, FileDisplayResult, ResourceReference, failure, saved_file_display_receipt,
 };
 use pl_core::{
-    context::{ContextContent, ContextSource, OpaquePayload},
+    context::{ContextContent, ContextSource},
     tool::opaque::{CallContext, ToolError},
 };
 use pl_model::completion::AttachmentModality;
@@ -18,7 +18,7 @@ pub(super) async fn archived_file(
         for part in record.content.iter() {
             match part {
                 ContextContent::Resource { reference } if reference.id() == id => selected = true,
-                ContextContent::Opaque { payload } => {
+                ContextContent::Media { payload } => {
                     if let Some(attachment) =
                         pl_model::runtime::decode_attachment(payload).map_err(ToolError::new)?
                         && attachment.reference.id() == id
@@ -51,14 +51,14 @@ pub(super) async fn archived_file(
                 Err(error) => return Err(ToolError::new(error)),
             };
             if let Some(delivery) = delivery {
-                if let Some(file) = receipt_file(delivery.output.payload(), id)? {
+                if let Some(file) = receipt_file(delivery.output.details(), id)? {
                     return Ok(file);
                 }
                 // Only selected resource capabilities can follow the parent's owner-assigned
                 // provenance. Printed strings alone never authorize another archived file.
                 if selected
                     && let Some(children) =
-                        crate::lua::saved_nested_call_ids(delivery.output.payload())?
+                        crate::lua::saved_nested_call_ids(delivery.output.details())?
                 {
                     for child in children.into_iter().rev() {
                         let delivery = match tasks.result(&format!("task:{child}")) {
@@ -74,7 +74,7 @@ pub(super) async fn archived_file(
                             Err(error) => return Err(ToolError::new(error)),
                         };
                         if let Some(delivery) = delivery
-                            && let Some(file) = receipt_file(delivery.output.payload(), id)?
+                            && let Some(file) = receipt_file(delivery.output.details(), id)?
                         {
                             return Ok(file);
                         }
@@ -87,10 +87,7 @@ pub(super) async fn archived_file(
                 ContextContent::Resource { reference } if reference.id() == id => {
                     fallback = Some(from_reference(reference.clone()));
                 }
-                ContextContent::Opaque { payload } => {
-                    if let Some(file) = receipt_file(payload, id)? {
-                        return Ok(file);
-                    }
+                ContextContent::Media { payload } => {
                     if let Some(attachment) =
                         pl_model::runtime::decode_attachment(payload).map_err(ToolError::new)?
                         && attachment.reference.id() == id
@@ -109,13 +106,16 @@ pub(super) async fn archived_file(
     fallback.ok_or_else(|| failure("attachment id is not archived in this Thread's frozen context"))
 }
 
-fn receipt_file(payload: &OpaquePayload, id: &str) -> Result<Option<FileDisplayResult>, ToolError> {
-    if let Some(receipt) = saved_file_display_receipt(payload)? {
+fn receipt_file(
+    details: Option<&serde_json::Value>,
+    id: &str,
+) -> Result<Option<FileDisplayResult>, ToolError> {
+    if let Some(receipt) = saved_file_display_receipt(details)? {
         return Ok(receipt.files.into_iter().find(
             |file| matches!(file, FileDisplayResult::Ready { resource, .. } if resource.id() == id),
         ));
     }
-    if let Some(receipt) = crate::image::saved_view_image_receipt(payload)?
+    if let Some(receipt) = crate::image::saved_view_image_receipt(details)?
         && receipt.original.id() == id
     {
         return Ok(Some(FileDisplayResult::Ready {
@@ -126,7 +126,7 @@ fn receipt_file(payload: &OpaquePayload, id: &str) -> Result<Option<FileDisplayR
             origin: FileDisplayOrigin::Archive,
         }));
     }
-    if let Some(receipt) = crate::image_card::saved_image_card_receipt(payload)?
+    if let Some(receipt) = crate::image_card::saved_image_card_receipt(details)?
         && receipt.image.id() == id
     {
         return Ok(Some(from_reference(receipt.image)));

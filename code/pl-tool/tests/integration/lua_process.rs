@@ -149,7 +149,7 @@ impl pl_core::model::ModelSession for LifecycleModel {
                             .into_iter()
                             .next()?
                             .ok()?;
-                    (value["stdout"]["content"] == expected)
+                    (value["stdout"] == expected)
                         .then(|| value["taskId"].as_str().map(str::to_owned))
                         .flatten()
                 })
@@ -226,14 +226,22 @@ async fn truncated_program_exposes_head_tail_and_queryable_original_without_reex
         let status = if fails { "failed" } else { "succeeded" };
         let recovery = format!(
             r#"
-local chunks={{}}; local cursor=0
+local chunks={{}}; local cursor=0; local seen=0; local total=nil
 repeat
   local q=tools.get_tool_task({{taskId=RECOVER_TASK_ID,resultCursor=cursor}})
-  assert(q.task.status=='{status}')
+  assert(q.task.taskId==RECOVER_TASK_ID and q.task.toolId=='exec' and q.task.status=='{status}')
+  total=total or q.result.totalBytes
+  assert(q.result.totalBytes==total and #q.result.content>0)
   chunks[#chunks+1]=q.result.content; cursor=q.result.nextCursor
+  seen=seen+#q.result.content
+  assert(cursor==json.null and seen==total or cursor==seen and seen<total)
 until cursor==nil or cursor==json.null
 assert(#chunks>1)
-local saved=json.decode(table.concat(chunks))
+local original=table.concat(chunks)
+local multibyte=assert(original:find('中',1,true))
+local ok,err=pcall(function() tools.get_tool_task({{taskId=RECOVER_TASK_ID,resultCursor=multibyte}}) end)
+assert(not ok and err.message:find('UTF-8 character',1,true))
+local saved=json.decode(original).data.value
 local expected='BEGIN'..string.rep('中',8192)..'FINAL SUMMARY END'
 assert(saved.output=={expected_output})
 {error_check}
@@ -413,17 +421,17 @@ async fn slow_command_status_queries_and_top_level_wait_share_the_real_task_life
         (
             "query-process",
             "exec",
-            json!({"code": "local q=tools.get_tool_task({taskId=OBSERVED_COMMAND_TASK,resultCursor=0}); local r=json.decode(q.result.content); assert(q.task.status=='succeeded' and r.exitCode==0 and r.stdout.content=='ready\\nfinished\\n'); return {taskId=q.task.taskId,status=q.task.status,exitCode=r.exitCode}"}),
+            json!({"code": "local q=tools.get_tool_task({taskId=OBSERVED_COMMAND_TASK,resultCursor=0}); local r=json.decode(q.result.content).data.value; assert(q.task.status=='succeeded' and r.exitCode==0 and r.stdout=='ready\\nfinished\\n'); return {taskId=q.task.taskId,status=q.task.status,exitCode=r.exitCode}"}),
         ),
         (
             "truncated-output",
             "exec",
-            json!({"code": "local r=tools.exec_command({command=[=[printf '0123456789abcdefghij']=],maxOutputChars=8}); assert(r.exitCode==0 and r.stdout.wasTruncated and r.stdout.omittedBytes>0); local full=tools.exec_command({command='cat '..string.format('%q',r.stdoutFile)}); assert(full.stdout.content=='0123456789abcdefghij'); return {bytes=#full.stdout.content}"}),
+            json!({"code": "local r=tools.exec_command({command=[=[printf '0123456789abcdefghij']=],maxOutputChars=8}); assert(r.exitCode==0 and r.stdoutWasTruncated and r.stdoutOmittedBytes>0); local full=tools.exec_command({command='cat '..string.format('%q',r.stdoutFile)}); assert(full.stdout=='0123456789abcdefghij'); return {bytes=#full.stdout}"}),
         ),
         (
             "default-stdin",
             "exec",
-            json!({"code": "local r=tools.exec_command({command=[=[cat; cat search-probe.txt]=],timeoutSeconds=2}); assert(r.exitCode==0 and r.stderr.content=='' and r.stdout.content=='default-stdin-probe\\n'); return 'default stdin is EOF; workspace files remain readable'"}),
+            json!({"code": "local r=tools.exec_command({command=[=[cat; cat search-probe.txt]=],timeoutSeconds=2}); assert(r.exitCode==0 and r.stderr=='' and r.stdout=='default-stdin-probe\\n'); return 'default stdin is EOF; workspace files remain readable'"}),
         ),
         (
             "interactive-start",
@@ -443,7 +451,7 @@ async fn slow_command_status_queries_and_top_level_wait_share_the_real_task_life
         (
             "interactive-query",
             "exec",
-            json!({"code": "local q=tools.get_tool_task({taskId=OBSERVED_COMMAND_TASK,resultCursor=0}); local r=json.decode(q.result.content); assert(q.task.status=='succeeded' and r.stdout.content=='ready\\nreceived:hello\\n'); return 'interactive command completed'"}),
+            json!({"code": "local q=tools.get_tool_task({taskId=OBSERVED_COMMAND_TASK,resultCursor=0}); local r=json.decode(q.result.content).data.value; assert(q.task.status=='succeeded' and r.stdout=='ready\\nreceived:hello\\n'); return 'interactive command completed'"}),
         ),
         ("timer", "sleep", json!({"durationMs":60000})),
         (
@@ -582,9 +590,27 @@ async fn slow_command_status_queries_and_top_level_wait_share_the_real_task_life
     .await
     .expect("releasing the real process must wake the original task waiter")
     .unwrap();
-    let terminal: serde_json::Value =
-        serde_json::from_str(terminal.output.payload().content()).unwrap();
+    assert_eq!(
+        pl_tool::exec::saved_command_exit_code(terminal.output.details()),
+        Some(0)
+    );
+    assert_eq!(
+        pl_tool::exec::saved_command_resources(terminal.output.details())
+            .unwrap()
+            .len(),
+        2
+    );
+    assert!(
+        terminal
+            .output
+            .content()
+            .iter()
+            .all(|part| matches!(part, pl_core::context::ContextContent::Text { .. }))
+    );
+    let capture = &terminal.output.details().unwrap()["command"];
+    let terminal = terminal.output.data().unwrap();
     assert_eq!(terminal["exitCode"], 0);
+    assert_eq!(terminal.as_object().unwrap().len(), 4);
     tokio::time::timeout(Duration::from_secs(15), runner)
         .await
         .unwrap()
@@ -596,33 +622,30 @@ async fn slow_command_status_queries_and_top_level_wait_share_the_real_task_life
         .flat_map(|effect| effect.deliveries.iter())
         .find(|delivery| delivery.call_id == "slow-program")
         .unwrap();
-    let receipt: serde_json::Value =
-        serde_json::from_str(parent.output.payload().content()).unwrap();
+    let receipt: serde_json::Value = parent.output.data().unwrap().clone();
     let selected: serde_json::Value =
         serde_json::from_str(receipt["output"].as_str().unwrap()).unwrap();
     assert_eq!(selected["exitCode"], terminal["exitCode"]);
-    assert_eq!(selected["stdout"]["content"], terminal["stdout"]["content"]);
+    assert_eq!(selected["stdout"], terminal["stdout"]);
     assert_eq!(selected["taskId"], terminal["taskId"]);
-    assert_eq!(terminal["captureStatus"], "complete");
-    assert!(terminal["stdoutResource"].is_object());
+    assert_eq!(capture["captureStatus"], "complete");
+    assert!(capture["stdoutResource"].is_object());
     assert!(
-        selected.to_string().len() * 2 < terminal.to_string().len(),
-        "returning the command view should not repeat the full archive envelope"
+        selected.get("stdoutResource").is_none(),
+        "a program result carries the command value without full archive metadata"
     );
     let stdin = effects
         .iter()
         .flat_map(|effect| effect.deliveries.iter())
         .find(|delivery| delivery.tool_id == "write_stdin")
         .unwrap();
-    let original_stdin: serde_json::Value =
-        serde_json::from_str(stdin.output.payload().content()).unwrap();
+    let original_stdin: serde_json::Value = stdin.output.data().unwrap().clone();
     let parent_stdin = effects
         .iter()
         .flat_map(|effect| effect.deliveries.iter())
         .find(|delivery| delivery.call_id == "interactive-input")
         .unwrap();
-    let parent_stdin: serde_json::Value =
-        serde_json::from_str(parent_stdin.output.payload().content()).unwrap();
+    let parent_stdin: serde_json::Value = parent_stdin.output.data().unwrap().clone();
     let selected_stdin: serde_json::Value =
         serde_json::from_str(parent_stdin["output"].as_str().unwrap())
             .unwrap_or_else(|error| panic!("stdin program result {parent_stdin}: {error}"));
@@ -634,7 +657,7 @@ async fn slow_command_status_queries_and_top_level_wait_share_the_real_task_life
         selected_stdin["targetTaskId"],
         original_stdin["targetTaskId"]
     );
-    assert!(selected_stdin.to_string().len() * 2 < original_stdin.to_string().len());
+    assert_eq!(selected_stdin, original_stdin);
     let deliveries = effects
         .iter()
         .flat_map(|effect| effect.deliveries.iter())
@@ -643,8 +666,7 @@ async fn slow_command_status_queries_and_top_level_wait_share_the_real_task_life
         .iter()
         .find(|d| d.call_id == "wait-timeout")
         .unwrap();
-    let result: serde_json::Value =
-        serde_json::from_str(timed_out.output.payload().content()).unwrap();
+    let result: serde_json::Value = timed_out.output.data().unwrap().clone();
     assert_eq!(result["timedOut"], true);
     assert_eq!(
         result["tasks"][0]["status"], "running",
@@ -654,8 +676,7 @@ async fn slow_command_status_queries_and_top_level_wait_share_the_real_task_life
         .iter()
         .find(|d| d.call_id == "wait-cancelled")
         .unwrap();
-    let result: serde_json::Value =
-        serde_json::from_str(cancelled.output.payload().content()).unwrap();
+    let result: serde_json::Value = cancelled.output.data().unwrap().clone();
     assert_eq!(result["timedOut"], false);
     assert_eq!(result["tasks"][0]["status"], "cancelled");
     assert!(
@@ -689,7 +710,7 @@ async fn slow_command_status_queries_and_top_level_wait_share_the_real_task_life
                 .iter()
                 .flat_map(|effect| effect.deliveries.iter())
                 .find(|delivery| delivery.call_id == id)
-                .map(|delivery| delivery.output.payload().content())
+                .and_then(|delivery| delivery.output.data())
         );
     }
     assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
@@ -811,6 +832,158 @@ async fn deadline_cancellation_and_close_join_real_lua_child_processes() {
 }
 
 #[tokio::test]
+async fn cancelling_one_real_lua_child_returns_observed_stderr_without_cancelling_the_program() {
+    use pl_core::thread::{
+        ToolDeliveryTarget, ToolOutcome,
+        task::{TaskCancellationReceipt, TaskStatus},
+    };
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("stdout-fixture"), b"unselected stdout\n").unwrap();
+    let definition = pl_tool::exec::exec_definition();
+    let prepared =
+        prepare_registration("exec_command", &definition, ToolCallPolicy::DirectOnly).unwrap();
+    let command = ThreadExecTool::new(
+        Arc::new(pl_tool::command::ExecutorCommandBackend::local(root.path()).unwrap()),
+        Arc::new(Archive(root.path().join("archive"))),
+        CommandAccess::WorkspaceOnly,
+        definition,
+    )
+    .registration(prepared)
+    .nested(false);
+    let tool = pl_tool::lua::LuaTool::new("");
+    let lua = prepare_registration("exec", tool.definition(), ToolCallPolicy::DirectOnly)
+        .unwrap()
+        .attach(ToolHandle::new(tool))
+        .with_nested_calls()
+        .foreground();
+    let code = r#"
+        local ok, err = pcall(tools.exec_command, args)
+        assert(not ok, 'a cancelled child returned success')
+        assert(err.message:find('cancelled', 1, true), err.message)
+        assert(err.output and err.output.stderr == 'observed before cancellation\n', 'missing observed stderr')
+        return {taskId=err.output.taskId, stderr=err.output.stderr, continued=true}
+    "#;
+    let arguments = serde_json::json!({
+        "code": code,
+        "args": {
+            "command": "cat stdout-fixture; echo $$ > business.pid; printf 'observed before cancellation\\n' >&2; exec sleep 600",
+            "timeoutSeconds": 20,
+        },
+    });
+    let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let model = host::Calls {
+        calls: [("exec".into(), arguments.to_string())].into(),
+        requests: requests.clone(),
+    };
+    let thread =
+        ThreadHandle::start("lua-child-only-cancel".into(), DynModelSession::new(model)).unwrap();
+    thread.register_tools(vec![command, lua]).await.unwrap();
+    let mut snapshots = thread.subscribe();
+    let runner = tokio::spawn({
+        let thread = thread.clone();
+        async move { thread.run_turn(host::turn("cancel-child")).await }
+    });
+    let observed = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(snapshot) = snapshots.next().await {
+            for (id, progress) in &snapshot.tool_progress {
+                if let Some(task) = snapshot.tasks.get(id)
+                    && task.tool_id == "exec_command"
+                    && task.status == TaskStatus::Running
+                    && progress.parts().iter().any(|part| {
+                        let text = part.content().text();
+                        text.contains("observed before cancellation\n")
+                            && text.contains("unselected stdout\n")
+                    })
+                {
+                    return Some(task.clone());
+                }
+            }
+        }
+        None
+    })
+    .await;
+    if !matches!(&observed, Ok(Some(_))) {
+        thread.close().await.unwrap();
+    }
+    let child = observed
+        .unwrap()
+        .expect("the running child published its stderr");
+    let pid = std::fs::read_to_string(root.path().join("business.pid")).unwrap();
+    let cancelled = thread.cancel_task(child.id.clone()).await.unwrap();
+    assert_eq!(cancelled, TaskCancellationReceipt::Requested);
+    let finished = tokio::time::timeout(Duration::from_secs(10), runner).await;
+    thread.close().await.unwrap();
+    finished
+        .expect("the parent Lua program must continue")
+        .unwrap()
+        .unwrap();
+    assert!(!std::path::Path::new(&format!("/proc/{}", pid.trim())).exists());
+
+    let effects = thread.effects().await.unwrap();
+    let mut deliveries = effects.iter().flat_map(|effect| effect.deliveries.iter());
+    let child_delivery = deliveries
+        .clone()
+        .find(|delivery| delivery.call_id == child.call_id)
+        .unwrap();
+    let parent_delivery = deliveries
+        .find(|delivery| delivery.tool_id == "exec")
+        .unwrap();
+    assert!(matches!(child_delivery.outcome, ToolOutcome::Cancelled));
+    assert!(
+        matches!(&child_delivery.target, ToolDeliveryTarget::Nested { parent_call_id }
+        if parent_call_id == &parent_delivery.call_id)
+    );
+    assert!(child_delivery.delivered_context.is_empty());
+    assert_eq!(
+        child_delivery.output.control(),
+        pl_core::tool::ToolControl::Continue
+    );
+    assert!(child_delivery.output.extension_mutations().is_empty());
+    assert!(child_delivery.output.revealed_tools().is_empty());
+    assert!(child_delivery.output.interaction().is_none());
+    let task = effects
+        .iter()
+        .rev()
+        .flat_map(|effect| effect.tasks.iter())
+        .find(|task| task.id == child.id)
+        .unwrap();
+    assert_eq!(task.status, TaskStatus::Cancelled);
+    assert!(task.cancel_requested);
+    let child_data = child_delivery.output.data().unwrap();
+    assert_eq!(child_data["taskId"], child.id);
+    assert_eq!(child_data["stdout"], "unselected stdout\n");
+    assert_eq!(child_data["stderr"], "observed before cancellation\n");
+
+    assert!(matches!(parent_delivery.outcome, ToolOutcome::Succeeded));
+    let parent_data = parent_delivery.output.data().unwrap();
+    assert!(parent_data["error"].is_null());
+    let program_output: serde_json::Value =
+        serde_json::from_str(parent_data["output"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        program_output,
+        serde_json::json!({
+            "taskId": child.id, "stderr": "observed before cancellation\n", "continued": true,
+        })
+    );
+    let requests = requests.lock().unwrap();
+    let result = requests
+        .last()
+        .unwrap()
+        .context
+        .records
+        .iter()
+        .find(|record| {
+            matches!(&record.source, pl_core::context::ContextSource::ToolResult { call_id, .. }
+            if call_id == &parent_delivery.call_id)
+        })
+        .expect("the model got the Lua program's selected output");
+    let context = serde_json::to_string(&result.content).unwrap();
+    assert!(context.contains("observed before cancellation"));
+    assert!(!context.contains("unselected stdout"));
+}
+
+#[tokio::test]
 async fn nonzero_process_exit_is_lua_data_while_the_original_child_stays_failed() {
     for signal in [None, Some(15)] {
         let root = tempfile::tempdir().unwrap();
@@ -850,7 +1023,7 @@ async fn nonzero_process_exit_is_lua_data_while_the_original_child_stays_failed(
             "assert(ok and r.exitCode==7 and r.signal==nil)"
         };
         let code = format!(
-            "local ok,r=pcall(function() return tools.exec_command({{command={}}}) end); {}; assert(r.stderr.content==string.rep('诊断'..string.char(10),4096)..'expected failing test'..string.char(10)..'FINAL_DIAGNOSTIC'); return {{exitCode=r.exitCode,signal=r.signal,stderr=r.stderr.content}}",
+            "local ok,r=pcall(function() return tools.exec_command({{command={}}}) end); {}; assert(r.stderr==string.rep('诊断'..string.char(10),4096)..'expected failing test'..string.char(10)..'FINAL_DIAGNOSTIC'); return {{exitCode=r.exitCode,signal=r.signal,stderr=r.stderr}}",
             serde_json::to_string(&command_text).unwrap(),
             checks,
         );
@@ -875,9 +1048,8 @@ async fn nonzero_process_exit_is_lua_data_while_the_original_child_stays_failed(
             .find(|d| d.call_id == parent.call_id)
             .unwrap()
             .output
-            .payload()
-            .content()
-            .to_owned();
+            .data()
+            .unwrap();
         assert_eq!(
             parent.status,
             pl_core::thread::task::TaskStatus::Succeeded,
@@ -900,24 +1072,26 @@ async fn nonzero_process_exit_is_lua_data_while_the_original_child_stays_failed(
             .find(|d| d.call_id == child.call_id)
             .unwrap();
         assert!(
-            original
-                .output
-                .payload()
-                .content()
+            original.output.data().unwrap()["stdout"]
+                .as_str()
+                .unwrap()
                 .contains("UNSELECTED_STDOUT")
         );
-        let raw: serde_json::Value =
-            serde_json::from_str(original.output.payload().content()).unwrap();
+        let raw: serde_json::Value = original.output.data().unwrap().clone();
         assert_eq!(raw["signal"], serde_json::json!(signal));
-        assert_eq!(raw["stderr"]["content"], diagnostic);
-        assert_eq!(raw["stderr"]["wasTruncated"], false);
+        assert_eq!(raw["stderr"], diagnostic);
+        assert!(raw.get("stderrWasTruncated").is_none());
+        if signal.is_none() {
+            assert_eq!(raw.as_object().unwrap().len(), 4);
+            assert_eq!(raw["exitCode"], 7);
+            assert!(original.output.details().unwrap()["command"]["capture"].is_object());
+        }
         let parent_delivery = effects
             .iter()
             .flat_map(|effect| effect.deliveries.iter())
             .find(|d| d.call_id == parent.call_id)
             .unwrap();
-        let selected: serde_json::Value =
-            serde_json::from_str(parent_delivery.output.payload().content()).unwrap();
+        let selected: serde_json::Value = parent_delivery.output.data().unwrap().clone();
         let selected: serde_json::Value =
             serde_json::from_str(selected["output"].as_str().unwrap()).unwrap();
         assert_eq!(
@@ -962,7 +1136,7 @@ async fn unhandled_command_archive_failure_retains_stderr_and_its_original_ident
         .foreground();
     let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
     let model = host::Calls {
-        calls: [("exec".into(), serde_json::json!({"code":"return tools.exec_command({command=[=[printf 'once\\n' >> invocation-count; printf 'UNSELECTED_STDOUT'; cat diagnostic >&2]=]})"}).to_string())].into(),
+        calls: [("exec".into(), serde_json::json!({"code":"return tools.exec_command({command=[=[printf 'once\\n' >> invocation-count; printf 'UNSELECTED_STDOUT'; cat diagnostic >&2; exit 7]=]})"}).to_string())].into(),
         requests: requests.clone(),
     };
     let thread =
@@ -983,8 +1157,21 @@ async fn unhandled_command_archive_failure_retains_stderr_and_its_original_ident
         .flat_map(|e| e.tasks.iter())
         .find(|t| t.tool_id == "exec_command")
         .unwrap();
-    let payload: serde_json::Value =
-        serde_json::from_str(parent.output.payload().content()).unwrap();
+    let child_output = effects
+        .iter()
+        .flat_map(|effect| effect.deliveries.iter())
+        .find(|delivery| delivery.call_id == child.call_id)
+        .unwrap();
+    let pl_core::thread::ToolOutcome::Failed(failure) = &child_output.outcome else {
+        panic!("archive failure must fail the command invocation");
+    };
+    assert_eq!(failure.kind(), pl_core::tool::ToolFailureKind::Invocation);
+    assert!(failure.source.downcast_ref::<std::io::Error>().is_some());
+    let child_data = child_output.output.data().unwrap();
+    assert_eq!(child_data["exitCode"], 7);
+    assert_eq!(child_data["archiveStatus"], "failed");
+    assert_eq!(child_data["diagnostic"]["code"], "exec.archive_failed");
+    let payload: serde_json::Value = parent.output.data().unwrap().clone();
     let error = payload["error"].as_str().unwrap();
     assert!(
         error.contains(&diagnostic),
@@ -1003,4 +1190,158 @@ async fn unhandled_command_archive_failure_retains_stderr_and_its_original_ident
         "once\n"
     );
     thread.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn actual_launch_and_stdin_rejections_match_their_closed_declarations() {
+    use pl_core::tool::ToolFailureKind;
+    use serde_json::{Value, json};
+
+    let root = tempfile::tempdir().unwrap();
+    let exec_definition = pl_tool::exec::exec_definition();
+    let stdin_definition = pl_tool::exec::write_stdin_definition();
+    let backend = pl_tool::command::ExecutorCommandBackend::local(root.path()).unwrap();
+    let processes = Arc::new(pl_tool::command::CommandProcessManager::new(Arc::new(
+        backend,
+    )));
+    let command = ThreadExecTool::from_process_manager(
+        processes.clone(),
+        Arc::new(Archive(root.path().join("archive"))),
+        CommandAccess::WorkspaceOnly,
+        exec_definition.clone(),
+    );
+    let stdin = pl_tool::exec::ThreadWriteStdinTool::new(processes, stdin_definition.clone());
+    let stdin = prepare_registration("write_stdin", &stdin_definition, ToolCallPolicy::DirectOnly)
+        .unwrap()
+        .attach(ToolHandle::new(pl_tool::binding::NativeWorkspaceTool::new(
+            stdin,
+        )))
+        .nested(false);
+    let command = command
+        .registration(
+            prepare_registration("exec_command", &exec_definition, ToolCallPolicy::DirectOnly)
+                .unwrap(),
+        )
+        .nested(false);
+    let lua = pl_tool::lua::LuaTool::new("");
+    let lua = prepare_registration("exec", lua.definition(), ToolCallPolicy::DirectOnly)
+        .unwrap()
+        .attach(ToolHandle::new(lua))
+        .with_nested_calls()
+        .foreground();
+    let code = r#"
+        local started, launch=pcall(tools.exec_command, {command='exit 0',cwd='missing-directory'})
+        assert(not started and launch.output.processStarted==false and launch.output.exitCode==nil)
+        local done=tools.exec_command({command='exit 0'})
+        local sent, write=pcall(tools.write_stdin, {taskId=done.taskId,chars='never sent'})
+        assert(not sent and write.output.targetTaskId==done.taskId)
+        assert(write.output.inputReceipt.outcome=='notSent' and write.output.inputReceipt.acceptedBytes==0)
+        return 'checked'
+    "#;
+    let thread = ThreadHandle::start(
+        "command-schema-branches".into(),
+        DynModelSession::new(host::Calls {
+            calls: [("exec".into(), json!({"code":code}).to_string())].into(),
+            requests: Default::default(),
+        }),
+    )
+    .unwrap();
+    thread
+        .register_tools(vec![command, stdin, lua])
+        .await
+        .unwrap();
+    thread
+        .run_turn(host::turn("verify observed result branches"))
+        .await
+        .unwrap();
+    let effects = thread.effects().await.unwrap();
+    thread.close().await.unwrap();
+    let deliveries: Vec<_> = effects
+        .iter()
+        .flat_map(|effect| effect.deliveries.iter())
+        .collect();
+    let parent = deliveries
+        .iter()
+        .find(|delivery| delivery.tool_id == "exec")
+        .unwrap();
+    assert_eq!(
+        parent.output.data().unwrap(),
+        &json!({"output":"checked", "error":null})
+    );
+
+    let rejected = |tool_id| {
+        let delivery = deliveries
+            .iter()
+            .find(|delivery| {
+                delivery.tool_id == tool_id
+                    && matches!(delivery.outcome, pl_core::thread::ToolOutcome::Failed(_))
+            })
+            .unwrap();
+        let pl_core::thread::ToolOutcome::Failed(error) = &delivery.outcome else {
+            unreachable!()
+        };
+        assert_eq!(error.kind(), ToolFailureKind::Invocation);
+        delivery.output.data().unwrap()
+    };
+    let launch = rejected("exec_command");
+    assert_eq!(launch["processStarted"], false);
+    assert!(launch["taskId"].is_string());
+    for stream_field in ["exitCode", "stdout", "stderr"] {
+        assert!(launch.get(stream_field).is_none());
+    }
+    let write = rejected("write_stdin");
+    assert_ne!(write["taskId"], write["targetTaskId"]);
+    assert_eq!(write["status"], "succeeded");
+    assert_eq!(write["diagnostic"]["code"], "exec.stdin_closed");
+    assert_eq!(
+        write["inputReceipt"],
+        json!({"acceptedBytes":0, "outcome":"notSent"})
+    );
+
+    let assert_closed_branch_fields = |schema: &Value, data: &Value, key: &str| {
+        let branch = schema["oneOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|branch| {
+                branch["required"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|field| field == key)
+            })
+            .unwrap();
+        assert_eq!(branch["additionalProperties"], false);
+        for field in branch["required"].as_array().unwrap() {
+            assert!(
+                data.get(field.as_str().unwrap()).is_some(),
+                "missing {field}"
+            );
+        }
+        for field in data.as_object().unwrap().keys() {
+            assert!(
+                branch["properties"].get(field).is_some(),
+                "undeclared {field}"
+            );
+        }
+        let diagnostic = &branch["properties"]["diagnostic"];
+        assert_eq!(diagnostic["additionalProperties"], false);
+        for field in data["diagnostic"].as_object().unwrap().keys() {
+            assert!(
+                diagnostic["properties"].get(field).is_some(),
+                "undeclared diagnostic {field}"
+            );
+        }
+    };
+    let exec_schema = exec_definition.output_schema().unwrap();
+    assert_closed_branch_fields(exec_schema, launch, "processStarted");
+    assert_closed_branch_fields(
+        stdin_definition.output_schema().unwrap(),
+        write,
+        "targetTaskId",
+    );
+    assert_eq!(
+        exec_schema["oneOf"][0]["required"],
+        json!(["taskId", "exitCode", "stdout", "stderr"])
+    );
 }

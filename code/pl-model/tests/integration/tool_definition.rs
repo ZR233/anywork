@@ -70,13 +70,11 @@ fn author_definitions_project_without_rewriting_schema_or_input_format() {
                 };
                 let expected_output = if has_output {
                     Some(output.clone())
-                } else if policy == ToolCallPolicy::DirectAndProgrammatic {
-                    Some(json!({"type":"object", "additionalProperties":true}))
                 } else {
                     None
                 };
                 assert_eq!(actual_output, &expected_output);
-                if policy == ToolCallPolicy::DirectOnly {
+                if policy == ToolCallPolicy::DirectOnly || !has_output {
                     assert!(callers.is_empty());
                 } else {
                     assert_eq!(

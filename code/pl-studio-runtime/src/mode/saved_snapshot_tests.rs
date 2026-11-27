@@ -95,6 +95,7 @@ fn legacy_state(manager: &ThreadModeManager) -> Result<ThreadSnapshot> {
         context: ContextSnapshot {
             revision: 1,
             records: vec![ContextRecord {
+                tool_data: Default::default(),
                 id: "preserved-user-history".into(),
                 turn_id: None,
                 source: ContextSource::User,

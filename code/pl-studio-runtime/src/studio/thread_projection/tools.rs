@@ -100,6 +100,26 @@ pub(in crate::studio) fn project_repaired_tool_call(
                 Some(supplement_output(output, references)?),
             ))
         }
+        ThreadToolState::Cancelled(cancelled) => {
+            let Some(output) = cancelled.output() else {
+                return Err(ProjectionError::DuplicateCall(saved.id.clone()));
+            };
+            ThreadToolState::Cancelled(crate::CancelledThreadTool::new(
+                cancelled.cancelled_at(),
+                cancelled.reason().into(),
+                Some(supplement_output(output, references)?),
+            ))
+        }
+        ThreadToolState::Interrupted(interrupted) => {
+            let Some(output) = interrupted.output() else {
+                return Err(ProjectionError::DuplicateCall(saved.id.clone()));
+            };
+            ThreadToolState::Interrupted(crate::InterruptedThreadTool::new(
+                interrupted.interrupted_at(),
+                interrupted.reason().into(),
+                Some(supplement_output(output, references)?),
+            ))
+        }
         _ => return Err(ProjectionError::DuplicateCall(saved.id.clone())),
     };
     Ok(vec![ExecutionItem::new(
@@ -173,11 +193,13 @@ fn project_invocation(
                 ThreadToolState::Interrupted(crate::InterruptedThreadTool::new(
                     updated_at,
                     "Tool execution was interrupted; no side effect was replayed.".into(),
+                    None,
                 ))
             }
             TaskStatus::Cancelled => ThreadToolState::Cancelled(crate::CancelledThreadTool::new(
                 updated_at,
                 "Tool execution was cancelled; observed facts remain in the journal.".into(),
+                None,
             )),
             TaskStatus::Succeeded => {
                 // Answer consumption retires the delivery while the terminal Task can remain.
@@ -214,7 +236,7 @@ fn project_invocation(
         && delivery.tool_id == "skill_view"
         && matches!(delivery.outcome, ToolOutcome::Succeeded)
         && let Ok(Some(mut activation)) = pl_tool::skill::saved_skill_activation(
-            delivery.output.payload(),
+            delivery.output.data(),
             turn_id.into(),
             crate::SkillActivationCause::Tool {
                 tool_call_id: id.clone(),
@@ -290,53 +312,44 @@ fn completed_interaction_output(
 
 pub(super) fn delivery_context(delivery: &ToolDelivery) -> &[pl_core::context::ContextContent] {
     match delivery.target {
-        pl_core::thread::ToolDeliveryTarget::Nested { .. } => delivery.output.context(),
+        pl_core::thread::ToolDeliveryTarget::Nested { .. } => delivery.output.content(),
         _ => &delivery.delivered_context,
     }
 }
 
 fn terminal(delivery: &ToolDelivery, at: i64) -> Result<ThreadToolState, ProjectionError> {
     let mut resources = Vec::new();
-    let task_query_payload = (delivery.tool_id == "get_tool_task"
-        && delivery.output.payload().format() == "pl.tool.task")
-        .then_some(delivery.output.payload());
     for content in delivery_context(delivery) {
         match content {
             pl_core::context::ContextContent::Text { .. } => {}
             pl_core::context::ContextContent::Resource { reference } => {
                 resources.push(serde_json::to_value(reference)?)
             }
-            pl_core::context::ContextContent::Opaque { payload } => {
-                // The same query payload receives its explicit machine envelope
-                // below. Retain every other opaque context without duplicating it.
-                if task_query_payload != Some(payload) {
-                    resources.push(serde_json::to_value(payload)?);
-                }
+            pl_core::context::ContextContent::Media { .. }
+            | pl_core::context::ContextContent::Opaque { .. } => {
+                resources.push(serde_json::to_value(content)?);
             }
         }
     }
-    if pl_tool::file_display::saved_file_display_receipt(delivery.output.payload())
-        .map_err(ProjectionError::ToolMedia)?
-        .is_some()
+    if let Some(receipt) =
+        pl_tool::file_display::saved_file_display_receipt(delivery.output.details())
+            .map_err(ProjectionError::ToolMedia)?
     {
-        // Display metadata is a public artifact, not model input. Keep the standard
-        // ContextContent shape here without modifying the actual delivered context.
-        resources.push(serde_json::to_value(
-            pl_core::context::ContextContent::Opaque {
-                payload: delivery.output.payload().clone(),
-            },
-        )?);
+        // Product metadata stays separate from the model's frozen content.
+        resources.push(serde_json::json!({"fileDisplay": receipt}));
     }
-    if let Some(payload) = task_query_payload {
-        // A query may itself finish in the background. Its delivered text then
-        // includes a task notice, but the original versioned page is unchanged.
-        // Preserve that producer value as metadata without altering model input.
-        let artifact = serde_json::to_value(pl_core::context::ContextContent::Opaque {
-            payload: payload.clone(),
-        })?;
+    for reference in pl_tool::exec::saved_command_resources(delivery.output.details())
+        .map_err(ProjectionError::ToolMedia)?
+    {
+        let artifact = serde_json::to_value(reference)?;
         if !resources.contains(&artifact) {
             resources.push(artifact);
         }
+    }
+    if let Some(data) = delivery.output.data() {
+        // Product consumers read the author's value independently of the frozen
+        // model presentation, including explicit null and business failures.
+        resources.push(serde_json::json!({"toolData": data}));
     }
     let output = ThreadToolOutput::new(
         text_content(delivery_context(delivery)),
@@ -359,46 +372,21 @@ fn terminal(delivery: &ToolDelivery, at: i64) -> Result<ThreadToolState, Project
         ToolOutcome::Cancelled => ThreadToolState::Cancelled(crate::CancelledThreadTool::new(
             at,
             "Tool execution was cancelled; observed facts remain in the journal.".into(),
+            Some(output),
         )),
         ToolOutcome::Interrupted => {
             ThreadToolState::Interrupted(crate::InterruptedThreadTool::new(
                 at,
                 "Tool execution was interrupted; no side effect was replayed.".into(),
+                Some(output),
             ))
         }
     })
 }
 
-// Decode only the producer-owned versioned command receipt. The core outcome remains
-// authoritative even when a process receipt reports a different exit status.
+// The author supplies process details; the core outcome remains authoritative.
 fn command_exit_code(delivery: &ToolDelivery) -> Option<i32> {
-    let payload = delivery.output.payload();
-    if !matches!(
-        delivery.tool_id.as_str(),
-        "exec" | "exec_command" | "write_stdin"
-    ) || payload.format() != "pl.tool.exec"
-        || !matches!(payload.version(), 1 | 2)
-    {
-        return None;
-    }
-    if payload.version() == 2 {
-        #[derive(serde::Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct CommandReceipt {
-            exit_code: Option<i32>,
-        }
-        return serde_json::from_str::<CommandReceipt>(payload.content())
-            .ok()?
-            .exit_code;
-    }
-    #[derive(serde::Deserialize)]
-    struct CommandReceipt {
-        state: pl_tool::command::CommandProcessLifecycle,
-    }
-    serde_json::from_str::<CommandReceipt>(payload.content())
-        .ok()?
-        .state
-        .exit_code()
+    pl_tool::exec::saved_command_exit_code(delivery.output.details())
 }
 
 #[cfg(test)]
@@ -423,6 +411,7 @@ mod interaction_current_tests {
             let mut snapshot = ThreadSnapshot::default();
             snapshot.context.records = [
                 ContextRecord {
+                    tool_data: Default::default(),
                     id: "call".into(),
                     turn_id: Some("turn".into()),
                     source: ContextSource::Assistant,
@@ -430,6 +419,7 @@ mod interaction_current_tests {
                     tool_calls: vec![call.clone()],
                 },
                 ContextRecord {
+                    tool_data: Default::default(),
                     id: "result".into(),
                     turn_id: Some("turn".into()),
                     source: ContextSource::ToolResult {
@@ -442,6 +432,7 @@ mod interaction_current_tests {
                     tool_calls: vec![],
                 },
                 ContextRecord {
+                    tool_data: Default::default(),
                     id: "answer".into(),
                     turn_id: Some("turn".into()),
                     source: ContextSource::Runtime {
@@ -476,106 +467,260 @@ mod interaction_current_tests {
 }
 
 #[cfg(test)]
-mod task_query_payload_tests {
+mod tool_data_tests {
     use super::*;
-    use pl_core::context::{ContextContent, OpaquePayload};
+    use pl_agent_tool::{ToolData, ToolResult};
+    use pl_core::context::ContextContent;
     use pl_core::tool::ToolOutput;
     use serde_json::json;
-    use std::sync::Arc;
 
     fn text(value: &str) -> ContextContent {
-        ContextContent::Text {
-            text: Arc::from(value),
-        }
+        ContextContent::Text { text: value.into() }
     }
 
-    fn query_payload(version: u32) -> OpaquePayload {
-        OpaquePayload::new(
-            "pl.tool.task",
-            version,
-            json!({
-                "task": {
-                    "id": "task:original", "callId": "call:original", "toolId": "exec",
-                    "turnId": "turn:control", "revision": 2, "status": "succeeded"
-                },
-                "result": {
-                    "format": "pl.tool.exec", "version": 2, "content": "{\"exitCode\":0}",
-                    "nextCursor": null, "totalBytes": 14
-                }
-            })
-            .to_string(),
-        )
-        .unwrap()
-    }
-
-    fn delivery(tool: &str, payload: OpaquePayload, context: Vec<ContextContent>) -> ToolDelivery {
+    fn delivery(data: ToolData, content: Vec<ContextContent>) -> ToolDelivery {
         ToolDelivery {
             target: Default::default(),
             call_id: "call:query".into(),
-            tool_id: tool.into(),
-            output: ToolOutput::new(payload, context.clone()),
-            delivered_context: context,
+            tool_id: "get_tool_task".into(),
+            output: ToolOutput::new(ToolResult::new(data, content.clone())),
+            delivered_context: content,
             outcome: ToolOutcome::Succeeded,
+            cancellation_cause: None,
         }
     }
 
     #[test]
-    fn query_payload_survives_inline_background_and_existing_opaque_context() {
-        let payload = query_payload(1);
-        let opaque = ContextContent::Opaque {
-            payload: payload.clone(),
-        };
-        for context in [
-            vec![text("a JSON-looking display is not the payload")],
+    fn query_data_is_independent_of_inline_and_background_presentation() {
+        let data = json!({"task":{"id":"task:original","status":"succeeded"},
+            "result":{"content":"original UTF-8 正文", "nextCursor":null}});
+        for content in [
+            vec![text("{\"display\":\"not the program result\"}")],
             vec![
-                text("Task task:query for tool get_tool_task finished: Succeeded."),
-                text("arbitrary delivered presentation"),
+                text("Task task:query finished."),
+                text("background summary"),
             ],
-            vec![opaque.clone(), text("same producer value")],
         ] {
-            let original = context.clone();
-            let delivery = delivery("get_tool_task", payload.clone(), context);
-            let state = terminal(&delivery, 42).unwrap();
-            let ThreadToolState::Succeeded(done) = state else {
-                panic!("query projection did not retain its successful outcome");
-            };
-            let output = done.output();
-            assert_eq!(output.result(), text_content(&original));
-            assert_eq!(
-                output.output_artifacts(),
-                &[serde_json::to_value(&opaque).unwrap()]
-            );
-            assert_eq!(delivery.delivered_context, original);
-            assert_eq!(delivery.output.payload(), &payload);
-        }
-    }
-
-    #[test]
-    fn task_payload_requires_its_original_query_tool_identity() {
-        for (tool, payload) in [
-            ("exec", query_payload(1)),
-            (
-                "get_tool_task",
-                OpaquePayload::text("not a task query payload"),
-            ),
-        ] {
-            let state = terminal(&delivery(tool, payload, Vec::new()), 42).unwrap();
-            let ThreadToolState::Succeeded(done) = state else {
+            let delivery = delivery(ToolData::Value(data.clone()), content.clone());
+            let ThreadToolState::Succeeded(done) = terminal(&delivery, 42).unwrap() else {
                 panic!("projection changed the execution outcome");
             };
-            assert!(done.output().output_artifacts().is_empty());
+            assert_eq!(done.output().result(), text_content(&content));
+            assert_eq!(
+                done.output().output_artifacts(),
+                &[json!({"toolData": data})]
+            );
+            assert_eq!(delivery.delivered_context, content);
+            assert_eq!(delivery.output.data(), Some(&data));
         }
     }
 
     #[test]
-    fn opaque_query_metadata_preserves_unknown_versions_without_decoding() {
-        let payload = query_payload(99);
-        let state = terminal(&delivery("get_tool_task", payload.clone(), Vec::new()), 42).unwrap();
-        let ThreadToolState::Succeeded(done) = state else {
+    fn missing_program_value_is_not_inferred_from_json_looking_text() {
+        let content = vec![text("{\"taskId\":\"pretend\"}")];
+        let delivery = delivery(ToolData::Absent, content.clone());
+        let ThreadToolState::Succeeded(done) = terminal(&delivery, 42).unwrap() else {
             panic!("projection changed the execution outcome");
         };
-        let artifact: ContextContent =
-            serde_json::from_value(done.output().output_artifacts()[0].clone()).unwrap();
-        assert_eq!(artifact, ContextContent::Opaque { payload });
+        assert!(done.output().output_artifacts().is_empty());
+        assert_eq!(done.output().result(), text_content(&content));
+    }
+
+    #[test]
+    fn stopped_tool_output_survives_product_bodies_budget_and_repair() -> anyhow::Result<()> {
+        let data = json!({"observed": "partial-value-".repeat(8192)});
+        for outcome in [ToolOutcome::Cancelled, ToolOutcome::Interrupted] {
+            let mut delivery = delivery(
+                ToolData::Value(data.clone()),
+                vec![text("observed before execution stopped")],
+            );
+            delivery.tool_id = "exec_command".into();
+            delivery.outcome = outcome;
+            let state = terminal(&delivery, 42)?;
+            match (&delivery.outcome, &state) {
+                (ToolOutcome::Cancelled, ThreadToolState::Cancelled(_))
+                | (ToolOutcome::Interrupted, ThreadToolState::Interrupted(_)) => {}
+                _ => panic!("projection changed the execution outcome"),
+            }
+            let item = ExecutionItem::new(
+                "stopped-tool".into(),
+                crate::ItemStamp {
+                    thread_id: std::borrow::Cow::Borrowed("thread"),
+                    turn_id: std::borrow::Cow::Borrowed("turn"),
+                    ordinal: 1,
+                    revision: 1,
+                    created_at: 1,
+                    updated_at: 42,
+                },
+                ExecutionShape::Tool(ThreadToolItem::new(
+                    ThreadToolInvocation::new("call".into(), "exec_command".into(), "{}".into()),
+                    state,
+                )),
+            );
+            let output = item.tool().unwrap().terminal_output().unwrap();
+            assert_eq!(output.result(), "observed before execution stopped");
+            assert_eq!(output.output_artifacts(), &[json!({"toolData": data})]);
+            assert!(
+                super::super::live::memory_budget::item_body_bytes(&item)
+                    >= data["observed"].as_str().unwrap().len() as u64
+            );
+            let draft =
+                crate::studio::runtime::chat_item::completion_draft(&item, 1, "database", None)?;
+            // The product descriptor retains the true state; large values only
+            // live in the existing demand-read body, not the metadata or preview.
+            assert!(draft.metadata.len() < 4096);
+            assert!(draft.payload.len() < 4096);
+            let content = draft
+                .contents
+                .iter()
+                .find(|(key, _)| key.key == "tool.output-artifacts")
+                .map(|(_, value)| value)
+                .unwrap();
+            let bytes = content
+                .data
+                .range(0, usize::try_from(content.descriptor.byte_length)?)?;
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(bytes.as_bytes())?,
+                json!([{"toolData": data}]),
+            );
+            let repaired = project_repaired_tool_call("thread", &item, &[], 43)?;
+            assert_eq!(repaired[0].state(), item.state());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn tool_data_rust_fixture_survives_product_projection() {
+        // Synthetic author results pass through the production projection and
+        // Serialize implementation. Dart consumes the same wire fixtures.
+        let cases = [
+            (
+                "exec_nonzero",
+                "exec_command",
+                true,
+                ToolData::Value(json!({"taskId":"task:command", "exitCode":7,
+                    "stdout":"hello\n", "stderr":"failure\n"})),
+                "[exit 7]\nhello\n[stderr]\nfailure\n",
+            ),
+            (
+                "stdin_terminal",
+                "write_stdin",
+                false,
+                ToolData::Value(json!({"taskId":"task:stdin", "targetTaskId":"task:command",
+                    "status":"succeeded", "inputReceipt":{"acceptedBytes":0,
+                        "outcome":"notSent", "detail":"Target is terminal."}})),
+                "Target is terminal; no input was sent.",
+            ),
+            (
+                "null",
+                "ordinary_tool",
+                false,
+                ToolData::Value(json!(null)),
+                " null presentation ",
+            ),
+            (
+                "empty_array",
+                "ordinary_tool",
+                false,
+                ToolData::Value(json!([])),
+                "array presentation",
+            ),
+            (
+                "empty_object",
+                "ordinary_tool",
+                false,
+                ToolData::Value(json!({})),
+                "object presentation",
+            ),
+            (
+                "text",
+                "ordinary_tool",
+                false,
+                ToolData::Value(json!("{\"only\":\"text\"}")),
+                "text presentation",
+            ),
+            (
+                "absent",
+                "ordinary_tool",
+                false,
+                ToolData::Absent,
+                "{\"pretend\":\"data\"}",
+            ),
+        ];
+        let mut fixtures = Vec::new();
+        for (name, tool_name, failed, data, presentation) in cases {
+            let expected = data.clone();
+            let mut delivery = delivery(data, vec![text(presentation)]);
+            delivery.tool_id = tool_name.into();
+            if failed {
+                delivery.outcome = ToolOutcome::Failed(std::sync::Arc::new(
+                    pl_core::tool::opaque::ToolError::operation(
+                        std::io::Error::other("business operation failed"),
+                        delivery.output.clone(),
+                    ),
+                ));
+            }
+            let state = terminal(&delivery, 42).unwrap();
+            let output = match &state {
+                ThreadToolState::Succeeded(done) if !failed => done.output(),
+                ThreadToolState::Failed(done) if failed => done.output().unwrap(),
+                _ => panic!("projection changed the execution outcome"),
+            };
+            assert_eq!(output.result(), presentation);
+            let expected_artifacts = match expected {
+                ToolData::Absent => Vec::new(),
+                ToolData::Value(value) => vec![json!({"toolData": value})],
+            };
+            assert_eq!(output.output_artifacts(), expected_artifacts);
+            fixtures.push(json!({
+                "name":name, "toolName":tool_name,
+                "outcome":if failed { "failed" } else { "succeeded" },
+                "output":output,
+            }));
+        }
+        let saved: Vec<serde_json::Value> = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../anywork/test/fixtures/tool_data_rust.json"
+        )))
+        .unwrap();
+        assert_eq!(fixtures, saved);
+    }
+}
+
+#[cfg(test)]
+mod file_display_wire_tests {
+    use super::*;
+    use pl_agent_tool::{ToolData, ToolResult};
+    use pl_core::{context::ContextContent, tool::ToolOutput};
+
+    #[test]
+    fn file_display_rust_fixture_survives_product_projection() {
+        // Shared with the Dart consumer; generated by FileDisplayReceipt's production Serialize.
+        let artifacts: Vec<serde_json::Value> = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../anywork/test/fixtures/file_display_rust.json"
+        )))
+        .unwrap();
+        assert_eq!(artifacts.len(), 1);
+        let content = vec![ContextContent::Text {
+            text: "original model presentation".into(),
+        }];
+        let delivery = ToolDelivery {
+            target: Default::default(),
+            call_id: "call:file-display-fixture".into(),
+            tool_id: "show_files".into(),
+            output: ToolOutput::new(
+                ToolResult::new(ToolData::Absent, content.clone())
+                    .with_details(artifacts[0].clone()),
+            ),
+            delivered_context: content,
+            outcome: ToolOutcome::Succeeded,
+            cancellation_cause: None,
+        };
+        let ThreadToolState::Succeeded(done) = terminal(&delivery, 42).unwrap() else {
+            panic!("projection changed the execution outcome");
+        };
+        assert_eq!(done.output().output_artifacts(), artifacts);
+        assert_eq!(done.output().result(), "original model presentation");
     }
 }

@@ -384,6 +384,10 @@ impl Fixture {
     ) -> Result<Arc<PreparedEffect>> {
         let id = self.sink.0.thread.id.clone();
         self.sink.admit(&id, write.clone())?;
+        self.project(write)
+    }
+
+    pub(super) fn project(&mut self, write: &Arc<HistoryExport>) -> Result<Arc<PreparedEffect>> {
         let prepared =
             self.projection
                 .prepare_committed(&self.sink.0.thread, &write.effect, &write.state)?;

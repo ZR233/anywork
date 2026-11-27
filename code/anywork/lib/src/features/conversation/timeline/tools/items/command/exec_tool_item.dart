@@ -2,6 +2,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../../../../../l10n/app_localizations.dart';
 import '../../../../../../shared/typed_json.dart';
+import '../../../state/tool_data_artifact.dart';
 import '../../../state/tool_presentation.dart';
 import '../../../widgets/timeline_activity_row.dart';
 import '../../support/execution_result_support.dart';
@@ -69,7 +70,13 @@ class ExecToolItem extends StructuredTimelineToolAdapter {
   TimelineToolRowSummary buildRowSummary(TimelineToolItemContext context) {
     final base = super.buildRowSummary(context);
     final item = context.item;
-    final exitCode = item.exitCode ?? _outputExitCode(item.output);
+    final outputData = context.controller.toolData;
+    final artifactExitCode = switch (outputData) {
+      ToolDataArtifactPresent(value: final value) when value is Map =>
+        value['exitCode'] is int ? value['exitCode'] as int : null,
+      _ => null,
+    };
+    final exitCode = item.exitCode ?? artifactExitCode;
     final showExitCode =
         exitCode != null &&
         (exitCode != 0 || isTimelineToolIssue(item.statusString));
@@ -87,11 +94,6 @@ class ExecToolItem extends StructuredTimelineToolAdapter {
       disclosureKey: base.disclosureKey,
       semanticsLabel: base.semanticsLabel,
     );
-  }
-
-  static int? _outputExitCode(String output) {
-    final value = decodeJsonObject(output)['exitCode'];
-    return value is int ? value : null;
   }
 
   @override

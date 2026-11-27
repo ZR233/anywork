@@ -44,7 +44,7 @@ pub(crate) fn committed_finish(
     {
         return None;
     }
-    pl_tool::finish_turn::saved_report(delivery.output.payload())
+    pl_tool::finish_turn::saved_report(delivery.output.details())
         .ok()
         .flatten()
 }

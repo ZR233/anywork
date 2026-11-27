@@ -79,10 +79,7 @@ impl pl_agent_tool::Tool for ExecutionCounter {
         _: CallContext,
     ) -> std::result::Result<ToolOutput, ToolError> {
         self.0.fetch_add(1, Ordering::Relaxed);
-        Ok(ToolOutput::new(
-            OpaquePayload::text("unexpected tool execution"),
-            Vec::new(),
-        ))
+        Ok(ToolOutput::text("unexpected tool execution".into()))
     }
 }
 

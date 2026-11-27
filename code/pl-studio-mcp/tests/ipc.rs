@@ -70,7 +70,7 @@ async fn domain_roundtrip_flow_control_limits_authentication_and_join() {
     .await
     .unwrap()
     .unwrap();
-    assert_eq!(result.value["payload"], payload);
+    assert_eq!(result.result.data().unwrap()["payload"], payload);
     assert!(!result.is_error);
     let error = client
         .invoke(
@@ -80,7 +80,7 @@ async fn domain_roundtrip_flow_control_limits_authentication_and_join() {
         .await
         .unwrap();
     assert!(error.is_error);
-    assert_eq!(error.value["message"], "business failure");
+    assert_eq!(error.result.data().unwrap()["message"], "business failure");
 
     let calls = backend.0.calls.load(Ordering::SeqCst);
     assert!(matches!(
@@ -141,7 +141,7 @@ async fn concurrent_streams_do_not_cross_results_or_replay() {
                 .invoke(invocation(json!({"id":id})), CancellationToken::new())
                 .await
                 .unwrap();
-            assert_eq!(result.value["id"], id);
+            assert_eq!(result.result.data().unwrap()["id"], id);
         });
     }
     tokio::time::timeout(TIMEOUT, async {

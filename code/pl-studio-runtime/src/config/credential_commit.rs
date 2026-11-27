@@ -509,7 +509,7 @@ impl ConfigStore {
     }
 
     pub(super) fn recover_credentials(&self) -> Result<()> {
-        if self.environment_only {
+        if self.uses_environment_credentials() {
             // A process-local empty store cannot acknowledge a durable credential recovery.
             for relative in [
                 "data/credential-transactions",
