@@ -36,7 +36,7 @@ pub(super) fn declaration(
     let input_schema = top_level_schema(&template, branches)?;
     let routing = match mode {
         DelegationMode::Automatic => {
-            "Current Native delegation mode: automatic. Profiles select role and workspace only. Before choosing modelSelection, discover the delegation_model tools, read the complete list_delegation_models inventory, and proactively compare suitable candidates with get_delegation_models including recent task evaluations. Compare at least two when available; do not use a Profile's configured route as a model recommendation."
+            "Current Native delegation mode: automatic. Profiles select role and workspace only. modelSelection must identify a currently qualified Native account/model; a Profile route is not an automatic selection."
         }
         DelegationMode::Profile => {
             "Current Native delegation mode: profile (fixed). Use the Profile's configured route; modelSelection is forbidden."
